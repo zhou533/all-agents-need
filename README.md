@@ -12,6 +12,20 @@ git submodule add <repo-url> aan
 bash aan/cursor/install.sh
 ```
 
+安装脚本会自动发现仓库中的 spec 目录，并以**符号链接**方式映射到 `.cursor/` 下。
+
+### 配置 MCP Servers
+
+交互式选择项目所需的 MCP Server，生成 `.cursor/mcp.json`：
+
+```bash
+bash aan/cursor/init-mcp.sh
+```
+
+脚本会列出 `mcp/mcp-servers.json` 中所有可用的 MCP Server，需要 API Key 的会标注。用 ↑↓ 导航、空格选择、回车确认。选择后可输入对应的 API Key，留空则保留占位符。
+
+### 安装 Agents & Commands
+
 安装脚本会自动发现仓库中的 spec 目录，并以**符号链接**方式映射到 `.cursor/` 下：
 
 | 源目录 | 目标目录 | 说明 |
@@ -67,8 +81,11 @@ all-agents-need/
 │   └── plan.md
 ├── rules/           → .cursor/rules/     (示例，待扩展)
 │   └── coding.mdc
+├── mcp/
+│   └── mcp-servers.json  # MCP Server 目录
 └── cursor/
-    └── install.sh   # Cursor 安装脚本
+    ├── install.sh         # Agents/Commands 安装脚本
+    └── init-mcp.sh        # MCP 配置脚本
 ```
 
 安装脚本会**自动发现**新目录，无需修改脚本本身。排除目录列表定义在脚本顶部的 `EXCLUDE_DIRS` 变量中。
