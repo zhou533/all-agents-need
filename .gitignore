@@ -1,0 +1,2 @@
+# MCP config contains API keys — do not commit
+.cursor/mcp.json

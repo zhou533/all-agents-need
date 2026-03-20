@@ -19,10 +19,13 @@ bash aan/cursor/install.sh
 交互式选择项目所需的 MCP Server，生成 `.cursor/mcp.json`：
 
 ```bash
+brew install jq gum   # 首次需要安装依赖
 bash aan/cursor/init-mcp.sh
 ```
 
-脚本会列出 `mcp/mcp-servers.json` 中所有可用的 MCP Server，需要 API Key 的会标注。用 ↑↓ 导航、空格选择、回车确认。选择后可输入对应的 API Key，留空则保留占位符。
+脚本会列出 `mcp/mcp-servers.json` 中所有可用的 MCP Server，需要 API Key 的会标注。用空格选择、回车确认。选择后可输入对应的 API Key，留空则保留占位符。
+
+> **安全提示**：API Key 会明文写入 `.cursor/mcp.json`，脚本会自动将该文件加入 `.gitignore`。**请勿提交此文件**，每位开发者应在本地独立运行脚本配置。
 
 ### 安装 Agents & Commands
 
