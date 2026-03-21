@@ -228,7 +228,7 @@ install_spec_dir() {
   local spec_dir="$1"
   local source_dir="$REPO_ROOT/$spec_dir"
   local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
-  local installed=0 skipped=0 updated=0
+  local installed=0 skipped=0 updated=0 up_to_date=0
 
   bold "  $spec_dir/"
 
@@ -249,7 +249,7 @@ install_spec_dir() {
         local current_link
         current_link="$(cd "$(dirname "$target")" && readlink "$(basename "$target")" 2>/dev/null || true)"
         if [[ "$current_link" == "$rel" ]]; then
-          skipped=$((skipped + 1))
+          up_to_date=$((up_to_date + 1))
         elif $DRY_RUN; then
           info "Would update symlink: .cursor/$spec_dir/$filename"
           updated=$((updated + 1))
@@ -290,9 +290,10 @@ install_spec_dir() {
   done
 
   if ! $DRY_RUN; then
-    if (( installed > 0 )); then ok "Installed $installed new file(s)"; fi
-    if (( updated > 0 ));   then ok "Updated $updated file(s)"; fi
-    if (( skipped > 0 ));   then warn "Skipped $skipped file(s)"; fi
+    if (( installed > 0 ));   then ok "Installed $installed new file(s)"; fi
+    if (( updated > 0 ));     then ok "Updated $updated file(s)"; fi
+    if (( up_to_date > 0 ));  then info "Up to date: $up_to_date file(s)"; fi
+    if (( skipped > 0 ));     then warn "Skipped $skipped file(s)"; fi
   fi
 }
 
@@ -300,7 +301,7 @@ install_nested_spec_dir() {
   local spec_dir="$1"
   local source_dir="$REPO_ROOT/$spec_dir"
   local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
-  local installed=0 skipped=0 updated=0
+  local installed=0 skipped=0 updated=0 up_to_date=0
 
   bold "  $spec_dir/ (nested)"
 
@@ -330,7 +331,7 @@ install_nested_spec_dir() {
       local current_link
       current_link="$(cd "$(dirname "$target")" && readlink "$(basename "$target")" 2>/dev/null || true)"
       if [[ "$current_link" == "$rel" ]]; then
-        skipped=$((skipped + 1))
+        up_to_date=$((up_to_date + 1))
       elif $DRY_RUN; then
         info "Would update symlink: .cursor/$spec_dir/$subdirname"
         updated=$((updated + 1))
@@ -371,9 +372,10 @@ install_nested_spec_dir() {
   done
 
   if ! $DRY_RUN; then
-    if (( installed > 0 )); then ok "Installed $installed skill(s)"; fi
-    if (( updated > 0 ));   then ok "Updated $updated skill(s)"; fi
-    if (( skipped > 0 ));   then warn "Skipped $skipped skill(s)"; fi
+    if (( installed > 0 ));   then ok "Installed $installed skill(s)"; fi
+    if (( updated > 0 ));     then ok "Updated $updated skill(s)"; fi
+    if (( up_to_date > 0 ));  then info "Up to date: $up_to_date skill(s)"; fi
+    if (( skipped > 0 ));     then warn "Skipped $skipped skill(s)"; fi
   fi
 }
 
