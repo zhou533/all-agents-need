@@ -104,7 +104,7 @@ Agent（planner）：
 - `modify: 先跳过阶段 2，优先做阶段 3`
 
 若你确认保存，请回复：
-- `save: {plan功能简称}`
+- `save`
 
 保存路径规则：
 - 目录：`docs/plan`

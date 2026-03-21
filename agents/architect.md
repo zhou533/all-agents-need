@@ -223,11 +223,10 @@ YYYY-MM-DD
 - **架构主文档**：`docs/architecture/ARCHITECTURE.md`
 - **变更记录目录**：`docs/architecture/changelog/`
 - **变更记录命名**：`YYYY-MM-DD-{英文简称}.md`
-  - 简称：小写英文，用连字符分隔，概括本次变更主题
-- **示例文件名**：
-  - `2026-03-21-initial-architecture.md`
-  - `2026-04-05-add-event-driven-layer.md`
-  - `2026-04-20-replace-sqlite-with-postgres.md`
+  - **示例文件名**：
+    - `2026-03-21-initial-architecture.md`
+    - `2026-04-05-add-event-driven-layer.md`
+    - `2026-04-20-replace-sqlite-with-postgres.md`
 
 ### 工作流程
 
