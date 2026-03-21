@@ -36,6 +36,21 @@ relpath() {
   python3 -c "import os.path,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$1" "$2"
 }
 
+# Returns 0 if the directory uses nested structure (subdirs with spec files),
+# e.g. skills/brainstorming/SKILL.md. Returns 1 for flat structure.
+is_nested_spec_dir() {
+  local dir="$1"
+  for subdir in "$dir"/*/; do
+    [[ -d "$subdir" ]] || continue
+    for ext in "${SPEC_EXTENSIONS[@]}"; do
+      if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 # ---- Defaults ------------------------------------------------------------
 FORCE=false
 UNINSTALL=false
@@ -143,13 +158,17 @@ discover_spec_dirs() {
     done
     $skip && continue
 
-    # Check if directory contains spec files
+    # Check flat structure (e.g. agents/*.md) or nested structure (e.g. skills/*/SKILL.md)
+    local found=false
     for ext in "${SPEC_EXTENSIONS[@]}"; do
       if compgen -G "$dir*.$ext" > /dev/null 2>&1; then
-        dirs+=("$dirname")
-        break
+        found=true; break
       fi
     done
+    if ! $found && is_nested_spec_dir "$dir"; then
+      found=true
+    fi
+    $found && dirs+=("$dirname")
   done
   echo "${dirs[@]}"
 }
@@ -165,21 +184,41 @@ discover_spec_dirs_display() {
     done
     $skip && continue
 
-    local count=0
-    for ext in "${SPEC_EXTENSIONS[@]}"; do
-      for f in "$dir"*."$ext"; do
-        [[ -f "$f" ]] && count=$((count + 1))
+    if is_nested_spec_dir "$dir"; then
+      # Nested structure (skills): list subdirectories
+      local subdirs=()
+      for subdir in "$dir"/*/; do
+        [[ -d "$subdir" ]] || continue
+        local has_specs=false
+        for ext in "${SPEC_EXTENSIONS[@]}"; do
+          if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
+            has_specs=true; break
+          fi
+        done
+        $has_specs && subdirs+=("$(basename "$subdir")/")
       done
-    done
-    if (( count > 0 )); then
-      local files=()
+      if (( ${#subdirs[@]} > 0 )); then
+        printf "  ${C_CYAN}%-12s${C_RESET} → .cursor/%-12s  (%s)\n" \
+          "$dirname/" "$dirname/" "$(IFS=', '; echo "${subdirs[*]}")"
+      fi
+    else
+      # Flat structure (agents, commands, rules): list files
+      local count=0
       for ext in "${SPEC_EXTENSIONS[@]}"; do
         for f in "$dir"*."$ext"; do
-          [[ -f "$f" ]] && files+=("$(basename "$f")")
+          [[ -f "$f" ]] && count=$((count + 1))
         done
       done
-      printf "  ${C_CYAN}%-12s${C_RESET} → .cursor/%-12s  (%s)\n" \
-        "$dirname/" "$dirname/" "$(IFS=', '; echo "${files[*]}")"
+      if (( count > 0 )); then
+        local files=()
+        for ext in "${SPEC_EXTENSIONS[@]}"; do
+          for f in "$dir"*."$ext"; do
+            [[ -f "$f" ]] && files+=("$(basename "$f")")
+          done
+        done
+        printf "  ${C_CYAN}%-12s${C_RESET} → .cursor/%-12s  (%s)\n" \
+          "$dirname/" "$dirname/" "$(IFS=', '; echo "${files[*]}")"
+      fi
     fi
   done
 }
@@ -254,6 +293,128 @@ install_spec_dir() {
     if (( installed > 0 )); then ok "Installed $installed new file(s)"; fi
     if (( updated > 0 ));   then ok "Updated $updated file(s)"; fi
     if (( skipped > 0 ));   then warn "Skipped $skipped file(s)"; fi
+  fi
+}
+
+install_nested_spec_dir() {
+  local spec_dir="$1"
+  local source_dir="$REPO_ROOT/$spec_dir"
+  local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
+  local installed=0 skipped=0 updated=0
+
+  bold "  $spec_dir/ (nested)"
+
+  if ! $DRY_RUN; then
+    mkdir -p "$target_dir"
+  fi
+
+  for subdir in "$source_dir"/*/; do
+    [[ -d "$subdir" ]] || continue
+    local subdirname
+    subdirname="$(basename "$subdir")"
+
+    local has_specs=false
+    for ext in "${SPEC_EXTENSIONS[@]}"; do
+      if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
+        has_specs=true; break
+      fi
+    done
+    $has_specs || continue
+
+    local target="$target_dir/$subdirname"
+    local rel
+    rel="$(relpath "$subdir" "$target_dir")"
+    rel="${rel%/}"
+
+    if [[ -L "$target" ]]; then
+      local current_link
+      current_link="$(cd "$(dirname "$target")" && readlink "$(basename "$target")" 2>/dev/null || true)"
+      if [[ "$current_link" == "$rel" ]]; then
+        skipped=$((skipped + 1))
+      elif $DRY_RUN; then
+        info "Would update symlink: .cursor/$spec_dir/$subdirname"
+        updated=$((updated + 1))
+      elif $FORCE || confirm_overwrite ".cursor/$spec_dir/$subdirname"; then
+        ln -sfn "$rel" "$target"
+        updated=$((updated + 1))
+      else
+        warn "Skipped: $subdirname/"
+        skipped=$((skipped + 1))
+      fi
+    elif [[ -d "$target" ]]; then
+      if $DRY_RUN; then
+        warn "Would replace directory: .cursor/$spec_dir/$subdirname"
+        updated=$((updated + 1))
+      elif $FORCE || confirm_overwrite ".cursor/$spec_dir/$subdirname"; then
+        if $USE_COPY; then
+          rm -rf "$target"
+          cp -R "$subdir" "$target"
+        else
+          rm -rf "$target"
+          ln -s "$rel" "$target"
+        fi
+        updated=$((updated + 1))
+      else
+        warn "Skipped: $subdirname/"
+        skipped=$((skipped + 1))
+      fi
+    else
+      if $DRY_RUN; then
+        ok "Would install: .cursor/$spec_dir/$subdirname/"
+      elif $USE_COPY; then
+        cp -R "$subdir" "$target"
+      else
+        ln -s "$rel" "$target"
+      fi
+      installed=$((installed + 1))
+    fi
+  done
+
+  if ! $DRY_RUN; then
+    if (( installed > 0 )); then ok "Installed $installed skill(s)"; fi
+    if (( updated > 0 ));   then ok "Updated $updated skill(s)"; fi
+    if (( skipped > 0 ));   then warn "Skipped $skipped skill(s)"; fi
+  fi
+}
+
+uninstall_nested_spec_dir() {
+  local spec_dir="$1"
+  local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
+  local removed=0
+
+  [[ -d "$target_dir" ]] || return 0
+
+  bold "  $spec_dir/ (nested)"
+
+  for target in "$target_dir"/*/; do
+    [[ -L "${target%/}" ]] || continue
+    local subdirname
+    subdirname="$(basename "$target")"
+    local link_dest
+    link_dest="$(cd "$(dirname "${target%/}")" && readlink "$(basename "${target%/}")")"
+    local resolved
+    resolved="$(cd "$(dirname "${target%/}")" && cd "$link_dest" 2>/dev/null && pwd)"
+
+    if [[ "$resolved" == "$REPO_ROOT"/* ]]; then
+      if $DRY_RUN; then
+        info "Would remove: .cursor/$spec_dir/$subdirname"
+      else
+        rm "${target%/}"
+      fi
+      removed=$((removed + 1))
+    fi
+  done
+
+  if ! $DRY_RUN && [[ -d "$target_dir" ]]; then
+    rmdir "$target_dir" 2>/dev/null && info "Removed empty directory: .cursor/$spec_dir/" || true
+  fi
+
+  if ! $DRY_RUN; then
+    if (( removed > 0 )); then
+      ok "Removed $removed skill(s)"
+    else
+      info "Nothing to remove"
+    fi
   fi
 }
 
@@ -350,13 +511,21 @@ main() {
     bold "Removing installed specs…"
     echo ""
     for dir in "${spec_dirs[@]}"; do
-      uninstall_spec_dir "$dir"
+      if is_nested_spec_dir "$REPO_ROOT/$dir"; then
+        uninstall_nested_spec_dir "$dir"
+      else
+        uninstall_spec_dir "$dir"
+      fi
     done
   else
     bold "Installing specs into .cursor/…"
     echo ""
     for dir in "${spec_dirs[@]}"; do
-      install_spec_dir "$dir"
+      if is_nested_spec_dir "$REPO_ROOT/$dir"; then
+        install_nested_spec_dir "$dir"
+      else
+        install_spec_dir "$dir"
+      fi
     done
   fi
 
