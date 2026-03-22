@@ -235,12 +235,6 @@ YYYY-MM-DD
 3. 更新 `docs/architecture/ARCHITECTURE.md`（全量更新，保持文档为最新全貌）
 4. 在 `docs/architecture/changelog/` 下新增变更记录
 
-### 参考模板
-
-在撰写架构文档时，可参考 `../templates/ARCHITECTURE.md` 获取结构化的文档框架。
-
-**重要：此模板仅作为启发和灵感参考，不是金科玉律，不必严格遵守。** 应根据项目实际情况灵活取舍章节和内容深度。
-
 ### 变更记录模板
 
 变更记录格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，使用以下变更类型：
