@@ -4,117 +4,60 @@ set -euo pipefail
 # =========================================================================
 #  AAN (All Agents Need) — Cursor Project Installer
 # =========================================================================
-#  Discovers spec directories (agents, commands, rules, …) and symlinks
-#  them into the host Cursor project's .cursor/ folder.
+#  Discovers spec directories (agents, commands, rules, skills, templates)
+#  and installs them into the host project's .cursor/ folder.
+#  Optionally configures MCP servers via init-mcp.sh.
 #
-#  Typical workflow:
-#    cd <your-cursor-project>
-#    git submodule add <repo-url> aan
-#    bash aan/cursor/install.sh
+#  Dependencies: gum  →  brew install gum
 #
-#  Re-run after pulling submodule updates to pick up new specs.
+#  Usage:
+#    bash aan/install/cursor/install.sh
+#    bash aan/install/cursor/install.sh --project-root /path/to/project
 # =========================================================================
 
 VERSION="1.0.0"
 
-# ---- Colours (disabled when stdout is not a tty) -------------------------
-if [[ -t 1 ]]; then
-  C_RESET='\033[0m'; C_GREEN='\033[0;32m'; C_YELLOW='\033[0;33m'
-  C_RED='\033[0;31m'; C_CYAN='\033[0;36m'; C_BOLD='\033[1m'
-else
-  C_RESET=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_CYAN=''; C_BOLD=''
+# ---- Dependency check ----------------------------------------------------
+if ! command -v gum &>/dev/null; then
+  echo ""
+  echo "  gum is required but not found."
+  echo "  Install:  brew install gum"
+  echo ""
+  exit 1
 fi
 
-# ---- Helpers -------------------------------------------------------------
-info()  { printf "${C_CYAN}ℹ${C_RESET}  %s\n" "$*"; }
-ok()    { printf "${C_GREEN}✓${C_RESET}  %s\n" "$*"; }
-warn()  { printf "${C_YELLOW}⚠${C_RESET}  %s\n" "$*"; }
-err()   { printf "${C_RED}✗${C_RESET}  %s\n" "$*" >&2; }
-bold()  { printf "${C_BOLD}%s${C_RESET}\n" "$*"; }
-
-relpath() {
-  python3 -c "import os.path,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$1" "$2"
-}
-
-# Returns 0 if the directory uses nested structure (subdirs with spec files),
-# e.g. skills/brainstorming/SKILL.md. Returns 1 for flat structure.
-is_nested_spec_dir() {
-  local dir="$1"
-  for subdir in "$dir"/*/; do
-    [[ -d "$subdir" ]] || continue
-    for ext in "${SPEC_EXTENSIONS[@]}"; do
-      if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
-        return 0
-      fi
-    done
-  done
-  return 1
-}
+# ---- Path resolution -----------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # ---- Defaults ------------------------------------------------------------
 FORCE=false
 UNINSTALL=false
 DRY_RUN=false
 USE_COPY=false
-OVERWRITE_ALL=false
 PROJECT_ROOT=""
 SPEC_EXTENSIONS=("md" "mdc")
-EXCLUDE_DIRS=(".git" "node_modules" "__pycache__" ".venv" "docs" "cursor")
+EXCLUDE_DIRS=(".git" ".cursor" "node_modules" "__pycache__" ".venv" "docs" "install" "mcp")
 
-# ---- Interactive overwrite confirmation ----------------------------------
-# Returns 0 (true) if the file should be overwritten, 1 (false) to skip.
-# Sets OVERWRITE_ALL=true when user picks 'a' (all).
-confirm_overwrite() {
-  local filepath="$1"
-  if $OVERWRITE_ALL; then return 0; fi
-
-  while true; do
-    printf "${C_YELLOW}⚠${C_RESET}  File exists: ${C_BOLD}%s${C_RESET}\n" "$filepath"
-    printf "   Overwrite? [y]es / [n]o / [a]ll / [q]uit: "
-    read -r choice < /dev/tty
-    case "$choice" in
-      y|Y) return 0 ;;
-      n|N) return 1 ;;
-      a|A) OVERWRITE_ALL=true; return 0 ;;
-      q|Q) info "Aborted by user."; exit 0 ;;
-      *)   warn "Invalid choice. Please enter y, n, a, or q." ;;
-    esac
-  done
+# ---- Helpers (gum-based) -------------------------------------------------
+header() {
+  gum style --border double --align center --padding "1 4" \
+    --border-foreground 212 --foreground 212 --bold \
+    "AAN Installer v${VERSION}" "Cursor"
 }
 
-# ---- Argument parsing ----------------------------------------------------
-usage() {
-  cat <<EOF
-${C_BOLD}AAN Installer v${VERSION}${C_RESET}
+info()  { gum style --foreground 6 "ℹ  $*"; }
+ok()    { gum style --foreground 2 "✓  $*"; }
+warn()  { gum style --foreground 3 "⚠  $*"; }
+err()   { gum style --foreground 1 "✗  $*" >&2; }
+label() { gum style --bold "$*"; }
 
-Usage: bash install.sh [OPTIONS]
-
-Options:
-  --project-root PATH   Cursor project root (auto-detected by default)
-  --force               Overwrite all conflicting files without confirmation
-  --copy                Copy files instead of creating symlinks
-  --uninstall           Remove previously installed symlinks
-  --dry-run             Preview changes without applying them
-  -h, --help            Show this help
-
-When a file conflict is detected, you will be prompted interactively:
-  [y] overwrite this file  [n] skip  [a] overwrite all remaining  [q] quit
-Use --force to skip all prompts (useful for CI / automation).
-
-Spec directories are auto-discovered: any top-level directory containing
-.md or .mdc files is treated as a spec directory and mapped to
-.cursor/<dir>/ in the target project.
-
-Currently recognised spec directories in this repo:
-EOF
-  discover_spec_dirs_display
+relpath() {
+  python3 -c "import os.path,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$1" "$2"
 }
 
 # ---- Path Resolution -----------------------------------------------------
 resolve_paths() {
-  # REPO_ROOT is the AAN repository root (one level up from this script)
-  REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
   if [[ -n "$PROJECT_ROOT" ]]; then
     PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
     return
@@ -143,7 +86,8 @@ resolve_paths() {
   exit 1
 }
 
-# ---- Spec Directory Discovery --------------------------------------------
+# ---- Discovery -----------------------------------------------------------
+
 discover_spec_dirs() {
   local dirs=()
   for dir in "$REPO_ROOT"/*/; do
@@ -151,42 +95,73 @@ discover_spec_dirs() {
     local dirname
     dirname="$(basename "$dir")"
 
-    # Skip excluded directories
     local skip=false
     for ex in "${EXCLUDE_DIRS[@]}"; do
       [[ "$dirname" == "$ex" ]] && { skip=true; break; }
     done
     $skip && continue
 
-    # Check flat structure (e.g. agents/*.md) or nested structure (e.g. skills/*/SKILL.md)
     local found=false
     for ext in "${SPEC_EXTENSIONS[@]}"; do
       if compgen -G "$dir*.$ext" > /dev/null 2>&1; then
         found=true; break
       fi
     done
-    if ! $found && is_nested_spec_dir "$dir"; then
-      found=true
+    if ! $found; then
+      for subdir in "$dir"/*/; do
+        [[ -d "$subdir" ]] || continue
+        for ext in "${SPEC_EXTENSIONS[@]}"; do
+          if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
+            found=true; break 2
+          fi
+        done
+      done
     fi
     $found && dirs+=("$dirname")
   done
   echo "${dirs[@]}"
 }
 
-discover_spec_dirs_display() {
-  for dir in "$REPO_ROOT"/*/; do
-    [[ -d "$dir" ]] || continue
-    local dirname
-    dirname="$(basename "$dir")"
-    local skip=false
-    for ex in "${EXCLUDE_DIRS[@]}"; do
-      [[ "$dirname" == "$ex" ]] && { skip=true; break; }
-    done
-    $skip && continue
+# Classify: "flat", "nested-skills" (symlink subdirs), "nested-rules" (preserve subdirs, symlink files)
+classify_dir() {
+  local dir="$REPO_ROOT/$1"
 
-    if is_nested_spec_dir "$dir"; then
-      # Nested structure (skills): list subdirectories
-      local subdirs=()
+  local has_nested=false
+  for subdir in "$dir"/*/; do
+    [[ -d "$subdir" ]] || continue
+    for ext in "${SPEC_EXTENSIONS[@]}"; do
+      if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
+        has_nested=true; break 2
+      fi
+    done
+  done
+
+  if ! $has_nested; then
+    echo "flat"
+    return
+  fi
+
+  case "$1" in
+    skills) echo "nested-skills" ;;
+    *)      echo "nested-rules" ;;
+  esac
+}
+
+count_spec_files() {
+  local dir="$REPO_ROOT/$1"
+  local count=0
+  local kind
+  kind="$(classify_dir "$1")"
+
+  case "$kind" in
+    flat)
+      for ext in "${SPEC_EXTENSIONS[@]}"; do
+        for f in "$dir"/*."$ext"; do
+          [[ -f "$f" ]] && count=$((count + 1))
+        done
+      done
+      ;;
+    nested-skills)
       for subdir in "$dir"/*/; do
         [[ -d "$subdir" ]] || continue
         local has_specs=false
@@ -195,46 +170,55 @@ discover_spec_dirs_display() {
             has_specs=true; break
           fi
         done
-        $has_specs && subdirs+=("$(basename "$subdir")/")
+        $has_specs && count=$((count + 1))
       done
-      if (( ${#subdirs[@]} > 0 )); then
-        printf "  ${C_CYAN}%-12s${C_RESET} → .cursor/%-12s  (%s)\n" \
-          "$dirname/" "$dirname/" "$(IFS=', '; echo "${subdirs[*]}")"
-      fi
-    else
-      # Flat structure (agents, commands, rules): list files
-      local count=0
-      for ext in "${SPEC_EXTENSIONS[@]}"; do
-        for f in "$dir"*."$ext"; do
-          [[ -f "$f" ]] && count=$((count + 1))
-        done
-      done
-      if (( count > 0 )); then
-        local files=()
+      ;;
+    nested-rules)
+      for subdir in "$dir"/*/; do
+        [[ -d "$subdir" ]] || continue
         for ext in "${SPEC_EXTENSIONS[@]}"; do
-          for f in "$dir"*."$ext"; do
-            [[ -f "$f" ]] && files+=("$(basename "$f")")
+          for f in "$subdir"*."$ext"; do
+            [[ -f "$f" ]] && count=$((count + 1))
           done
         done
-        printf "  ${C_CYAN}%-12s${C_RESET} → .cursor/%-12s  (%s)\n" \
-          "$dirname/" "$dirname/" "$(IFS=', '; echo "${files[*]}")"
-      fi
-    fi
-  done
+      done
+      ;;
+  esac
+  echo "$count"
 }
 
-# ---- Install / Uninstall ------------------------------------------------
-install_spec_dir() {
+build_dir_label() {
+  local dirname="$1"
+  local count
+  count="$(count_spec_files "$dirname")"
+  local kind
+  kind="$(classify_dir "$dirname")"
+
+  local detail=""
+  case "$kind" in
+    flat)           detail="${count} file(s)" ;;
+    nested-skills)  detail="${count} skill(s)" ;;
+    nested-rules)
+      local groups=()
+      for subdir in "$REPO_ROOT/$dirname"/*/; do
+        [[ -d "$subdir" ]] && groups+=("$(basename "$subdir")")
+      done
+      detail="sets: $(IFS=', '; echo "${groups[*]}")"
+      ;;
+  esac
+
+  printf "%-14s  %s" "$dirname/" "$detail"
+}
+
+# ---- Install functions ---------------------------------------------------
+
+install_flat() {
   local spec_dir="$1"
   local source_dir="$REPO_ROOT/$spec_dir"
   local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
   local installed=0 skipped=0 updated=0 up_to_date=0
 
-  bold "  $spec_dir/"
-
-  if ! $DRY_RUN; then
-    mkdir -p "$target_dir"
-  fi
+  $DRY_RUN || mkdir -p "$target_dir"
 
   for ext in "${SPEC_EXTENSIONS[@]}"; do
     for file in "$source_dir"/*."$ext"; do
@@ -251,20 +235,19 @@ install_spec_dir() {
         if [[ "$current_link" == "$rel" ]]; then
           up_to_date=$((up_to_date + 1))
         elif $DRY_RUN; then
-          info "Would update symlink: .cursor/$spec_dir/$filename"
+          info "Would update: .cursor/$spec_dir/$filename"
           updated=$((updated + 1))
-        elif $FORCE || confirm_overwrite ".cursor/$spec_dir/$filename"; then
+        elif $FORCE || gum confirm "Overwrite .cursor/$spec_dir/$filename?"; then
           ln -sf "$rel" "$target"
           updated=$((updated + 1))
         else
-          warn "Skipped: $filename"
           skipped=$((skipped + 1))
         fi
       elif [[ -f "$target" ]]; then
         if $DRY_RUN; then
           warn "Would overwrite: .cursor/$spec_dir/$filename"
           updated=$((updated + 1))
-        elif $FORCE || confirm_overwrite ".cursor/$spec_dir/$filename"; then
+        elif $FORCE || gum confirm "Overwrite existing .cursor/$spec_dir/$filename?"; then
           if $USE_COPY; then
             cp "$file" "$target"
           else
@@ -273,7 +256,6 @@ install_spec_dir() {
           fi
           updated=$((updated + 1))
         else
-          warn "Skipped: $filename"
           skipped=$((skipped + 1))
         fi
       else
@@ -289,25 +271,16 @@ install_spec_dir() {
     done
   done
 
-  if ! $DRY_RUN; then
-    if (( installed > 0 ));   then ok "Installed $installed new file(s)"; fi
-    if (( updated > 0 ));     then ok "Updated $updated file(s)"; fi
-    if (( up_to_date > 0 ));  then info "Up to date: $up_to_date file(s)"; fi
-    if (( skipped > 0 ));     then warn "Skipped $skipped file(s)"; fi
-  fi
+  print_stats "$spec_dir" "$installed" "$updated" "$up_to_date" "$skipped"
 }
 
-install_nested_spec_dir() {
+install_nested_skills() {
   local spec_dir="$1"
   local source_dir="$REPO_ROOT/$spec_dir"
   local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
   local installed=0 skipped=0 updated=0 up_to_date=0
 
-  bold "  $spec_dir/ (nested)"
-
-  if ! $DRY_RUN; then
-    mkdir -p "$target_dir"
-  fi
+  $DRY_RUN || mkdir -p "$target_dir"
 
   for subdir in "$source_dir"/*/; do
     [[ -d "$subdir" ]] || continue
@@ -333,20 +306,19 @@ install_nested_spec_dir() {
       if [[ "$current_link" == "$rel" ]]; then
         up_to_date=$((up_to_date + 1))
       elif $DRY_RUN; then
-        info "Would update symlink: .cursor/$spec_dir/$subdirname"
+        info "Would update: .cursor/$spec_dir/$subdirname"
         updated=$((updated + 1))
-      elif $FORCE || confirm_overwrite ".cursor/$spec_dir/$subdirname"; then
+      elif $FORCE || gum confirm "Overwrite .cursor/$spec_dir/$subdirname/?"; then
         ln -sfn "$rel" "$target"
         updated=$((updated + 1))
       else
-        warn "Skipped: $subdirname/"
         skipped=$((skipped + 1))
       fi
     elif [[ -d "$target" ]]; then
       if $DRY_RUN; then
-        warn "Would replace directory: .cursor/$spec_dir/$subdirname"
+        warn "Would replace dir: .cursor/$spec_dir/$subdirname"
         updated=$((updated + 1))
-      elif $FORCE || confirm_overwrite ".cursor/$spec_dir/$subdirname"; then
+      elif $FORCE || gum confirm "Replace directory .cursor/$spec_dir/$subdirname/?"; then
         if $USE_COPY; then
           rm -rf "$target"
           cp -R "$subdir" "$target"
@@ -356,7 +328,6 @@ install_nested_spec_dir() {
         fi
         updated=$((updated + 1))
       else
-        warn "Skipped: $subdirname/"
         skipped=$((skipped + 1))
       fi
     else
@@ -371,78 +342,109 @@ install_nested_spec_dir() {
     fi
   done
 
-  if ! $DRY_RUN; then
-    if (( installed > 0 ));   then ok "Installed $installed skill(s)"; fi
-    if (( updated > 0 ));     then ok "Updated $updated skill(s)"; fi
-    if (( up_to_date > 0 ));  then info "Up to date: $up_to_date skill(s)"; fi
-    if (( skipped > 0 ));     then warn "Skipped $skipped skill(s)"; fi
-  fi
+  print_stats "$spec_dir" "$installed" "$updated" "$up_to_date" "$skipped"
 }
 
-uninstall_nested_spec_dir() {
+# Accepts optional list of selected rule sets; if empty, installs all.
+install_nested_rules() {
   local spec_dir="$1"
+  shift
+  local selected_sets=("$@")
+  local source_dir="$REPO_ROOT/$spec_dir"
   local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
-  local removed=0
+  local installed=0 skipped=0 updated=0 up_to_date=0
 
-  [[ -d "$target_dir" ]] || return 0
+  for subdir in "$source_dir"/*/; do
+    [[ -d "$subdir" ]] || continue
+    local setname
+    setname="$(basename "$subdir")"
 
-  bold "  $spec_dir/ (nested)"
-
-  for target in "$target_dir"/*/; do
-    [[ -L "${target%/}" ]] || continue
-    local subdirname
-    subdirname="$(basename "$target")"
-    local link_dest
-    link_dest="$(cd "$(dirname "${target%/}")" && readlink "$(basename "${target%/}")")"
-    local resolved
-    resolved="$(cd "$(dirname "${target%/}")" && cd "$link_dest" 2>/dev/null && pwd)"
-
-    if [[ "$resolved" == "$REPO_ROOT"/* ]]; then
-      if $DRY_RUN; then
-        info "Would remove: .cursor/$spec_dir/$subdirname"
-      else
-        rm "${target%/}"
-      fi
-      removed=$((removed + 1))
+    if (( ${#selected_sets[@]} > 0 )); then
+      local match=false
+      for s in "${selected_sets[@]}"; do
+        [[ "$s" == "$setname" ]] && { match=true; break; }
+      done
+      $match || continue
     fi
+
+    local sub_target="$target_dir/$setname"
+    $DRY_RUN || mkdir -p "$sub_target"
+
+    for ext in "${SPEC_EXTENSIONS[@]}"; do
+      for file in "$subdir"*."$ext"; do
+        [[ -f "$file" ]] || continue
+        local filename
+        filename="$(basename "$file")"
+        local target="$sub_target/$filename"
+        local rel
+        rel="$(relpath "$file" "$sub_target")"
+
+        if [[ -L "$target" ]]; then
+          local current_link
+          current_link="$(cd "$(dirname "$target")" && readlink "$(basename "$target")" 2>/dev/null || true)"
+          if [[ "$current_link" == "$rel" ]]; then
+            up_to_date=$((up_to_date + 1))
+          elif $DRY_RUN; then
+            info "Would update: .cursor/$spec_dir/$setname/$filename"
+            updated=$((updated + 1))
+          elif $FORCE || gum confirm "Overwrite .cursor/$spec_dir/$setname/$filename?"; then
+            ln -sf "$rel" "$target"
+            updated=$((updated + 1))
+          else
+            skipped=$((skipped + 1))
+          fi
+        elif [[ -f "$target" ]]; then
+          if $DRY_RUN; then
+            warn "Would overwrite: .cursor/$spec_dir/$setname/$filename"
+            updated=$((updated + 1))
+          elif $FORCE || gum confirm "Overwrite .cursor/$spec_dir/$setname/$filename?"; then
+            if $USE_COPY; then
+              cp "$file" "$target"
+            else
+              rm "$target"
+              ln -s "$rel" "$target"
+            fi
+            updated=$((updated + 1))
+          else
+            skipped=$((skipped + 1))
+          fi
+        else
+          if $DRY_RUN; then
+            ok "Would install: .cursor/$spec_dir/$setname/$filename"
+          elif $USE_COPY; then
+            cp "$file" "$target"
+          else
+            ln -s "$rel" "$target"
+          fi
+          installed=$((installed + 1))
+        fi
+      done
+    done
   done
 
-  if ! $DRY_RUN && [[ -d "$target_dir" ]]; then
-    rmdir "$target_dir" 2>/dev/null && info "Removed empty directory: .cursor/$spec_dir/" || true
-  fi
-
-  if ! $DRY_RUN; then
-    if (( removed > 0 )); then
-      ok "Removed $removed skill(s)"
-    else
-      info "Nothing to remove"
-    fi
-  fi
+  print_stats "$spec_dir" "$installed" "$updated" "$up_to_date" "$skipped"
 }
 
-uninstall_spec_dir() {
+# ---- Uninstall functions -------------------------------------------------
+
+uninstall_flat() {
   local spec_dir="$1"
   local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
   local removed=0
 
   [[ -d "$target_dir" ]] || return 0
-
-  bold "  $spec_dir/"
 
   for ext in "${SPEC_EXTENSIONS[@]}"; do
     for target in "$target_dir"/*."$ext"; do
       [[ -L "$target" ]] || continue
-      # Resolve symlink and check if it points into our repo
       local link_dest
       link_dest="$(cd "$(dirname "$target")" && readlink "$(basename "$target")")"
       local resolved
       resolved="$(cd "$(dirname "$target")" && cd "$(dirname "$link_dest")" 2>/dev/null && pwd)/$(basename "$link_dest")"
 
       if [[ "$resolved" == "$REPO_ROOT"/* ]]; then
-        local filename
-        filename="$(basename "$target")"
         if $DRY_RUN; then
-          info "Would remove: .cursor/$spec_dir/$filename"
+          info "Would remove: .cursor/$spec_dir/$(basename "$target")"
         else
           rm "$target"
         fi
@@ -451,18 +453,123 @@ uninstall_spec_dir() {
     done
   done
 
-  # Remove directory if empty
   if ! $DRY_RUN && [[ -d "$target_dir" ]]; then
-    rmdir "$target_dir" 2>/dev/null && info "Removed empty directory: .cursor/$spec_dir/" || true
+    rmdir "$target_dir" 2>/dev/null || true
   fi
 
-  if ! $DRY_RUN; then
-    if (( removed > 0 )); then
-      ok "Removed $removed file(s)"
-    else
-      info "Nothing to remove"
-    fi
+  if (( removed > 0 )); then
+    ok "Removed $removed file(s) from $spec_dir/"
+  else
+    info "Nothing to remove in $spec_dir/"
   fi
+}
+
+uninstall_nested_skills() {
+  local spec_dir="$1"
+  local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
+  local removed=0
+
+  [[ -d "$target_dir" ]] || return 0
+
+  for target in "$target_dir"/*/; do
+    [[ -L "${target%/}" ]] || continue
+    local link_dest
+    link_dest="$(cd "$(dirname "${target%/}")" && readlink "$(basename "${target%/}")")"
+    local resolved
+    resolved="$(cd "$(dirname "${target%/}")" && cd "$link_dest" 2>/dev/null && pwd)"
+
+    if [[ "$resolved" == "$REPO_ROOT"/* ]]; then
+      if $DRY_RUN; then
+        info "Would remove: .cursor/$spec_dir/$(basename "$target")"
+      else
+        rm "${target%/}"
+      fi
+      removed=$((removed + 1))
+    fi
+  done
+
+  if ! $DRY_RUN && [[ -d "$target_dir" ]]; then
+    rmdir "$target_dir" 2>/dev/null || true
+  fi
+
+  if (( removed > 0 )); then
+    ok "Removed $removed skill(s) from $spec_dir/"
+  else
+    info "Nothing to remove in $spec_dir/"
+  fi
+}
+
+uninstall_nested_rules() {
+  local spec_dir="$1"
+  local target_dir="$PROJECT_ROOT/.cursor/$spec_dir"
+  local removed=0
+
+  [[ -d "$target_dir" ]] || return 0
+
+  for sub_target in "$target_dir"/*/; do
+    [[ -d "$sub_target" ]] || continue
+    for ext in "${SPEC_EXTENSIONS[@]}"; do
+      for target in "$sub_target"*."$ext"; do
+        [[ -L "$target" ]] || continue
+        local link_dest
+        link_dest="$(cd "$(dirname "$target")" && readlink "$(basename "$target")")"
+        local resolved
+        resolved="$(cd "$(dirname "$target")" && cd "$(dirname "$link_dest")" 2>/dev/null && pwd)/$(basename "$link_dest")"
+
+        if [[ "$resolved" == "$REPO_ROOT"/* ]]; then
+          if $DRY_RUN; then
+            info "Would remove: .cursor/$spec_dir/$(basename "$sub_target")/$(basename "$target")"
+          else
+            rm "$target"
+          fi
+          removed=$((removed + 1))
+        fi
+      done
+    done
+    if ! $DRY_RUN; then
+      rmdir "$sub_target" 2>/dev/null || true
+    fi
+  done
+
+  if ! $DRY_RUN && [[ -d "$target_dir" ]]; then
+    rmdir "$target_dir" 2>/dev/null || true
+  fi
+
+  if (( removed > 0 )); then
+    ok "Removed $removed rule(s) from $spec_dir/"
+  else
+    info "Nothing to remove in $spec_dir/"
+  fi
+}
+
+# ---- Stats printer -------------------------------------------------------
+print_stats() {
+  local dir="$1" installed="$2" updated="$3" up_to_date="$4" skipped="$5"
+  if $DRY_RUN; then return; fi
+  local parts=()
+  (( installed > 0 ))  && parts+=("${installed} installed")
+  (( updated > 0 ))    && parts+=("${updated} updated")
+  (( up_to_date > 0 )) && parts+=("${up_to_date} up-to-date")
+  (( skipped > 0 ))    && parts+=("${skipped} skipped")
+  if (( ${#parts[@]} > 0 )); then
+    ok "$dir/: $(IFS=', '; echo "${parts[*]}")"
+  fi
+}
+
+# ---- Argument parsing ----------------------------------------------------
+usage() {
+  gum style --border normal --padding "1 2" --border-foreground 212 \
+    "AAN Installer v${VERSION} — Cursor" \
+    "" \
+    "Usage: bash install.sh [OPTIONS]" \
+    "" \
+    "Options:" \
+    "  --project-root PATH   Project root (auto-detected by default)" \
+    "  --force               Overwrite without confirmation" \
+    "  --copy                Copy files instead of symlinks" \
+    "  --uninstall           Remove installed symlinks" \
+    "  --dry-run             Preview changes only" \
+    "  -h, --help            Show this help"
 }
 
 # ---- Main ----------------------------------------------------------------
@@ -476,12 +583,9 @@ main() {
       --uninstall)    UNINSTALL=true;    shift ;;
       --dry-run)      DRY_RUN=true;      shift ;;
       -h|--help)      show_help=true;    shift ;;
-      *)              err "Unknown option: $1"; SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"; usage; exit 1 ;;
+      *) err "Unknown option: $1"; usage; exit 1 ;;
     esac
   done
-
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
   if $show_help; then
     usage
@@ -491,56 +595,128 @@ main() {
   resolve_paths
 
   echo ""
-  bold "AAN Installer v${VERSION}"
+  header
   echo ""
   info "AAN repo:     $REPO_ROOT"
   info "Project root: $PROJECT_ROOT"
-  $DRY_RUN   && info "Mode: dry-run (no changes will be made)" || true
-  $USE_COPY  && info "Mode: copy (files will be copied, not symlinked)" || true
-  $UNINSTALL && info "Mode: uninstall" || true
-  echo ""
+  info "Target:       $PROJECT_ROOT/.cursor/"
+  $DRY_RUN  && warn "Mode: dry-run (no changes will be made)"
+  $USE_COPY && warn "Mode: copy (files will be copied, not symlinked)"
+  $UNINSTALL && warn "Mode: uninstall"
 
-  # Discover spec directories
+  local spec_dirs_str
+  spec_dirs_str="$(discover_spec_dirs)"
   local spec_dirs
-  read -ra spec_dirs <<< "$(discover_spec_dirs)"
+  read -ra spec_dirs <<< "$spec_dirs_str"
 
   if [[ ${#spec_dirs[@]} -eq 0 ]]; then
     warn "No spec directories found in $REPO_ROOT"
     exit 0
   fi
 
+  # ---- Uninstall mode ----------------------------------------------------
   if $UNINSTALL; then
-    bold "Removing installed specs…"
+    echo ""
+    label "Removing installed specs..."
     echo ""
     for dir in "${spec_dirs[@]}"; do
-      if is_nested_spec_dir "$REPO_ROOT/$dir"; then
-        uninstall_nested_spec_dir "$dir"
-      else
-        uninstall_spec_dir "$dir"
-      fi
+      local kind
+      kind="$(classify_dir "$dir")"
+      case "$kind" in
+        flat)           uninstall_flat "$dir" ;;
+        nested-skills)  uninstall_nested_skills "$dir" ;;
+        nested-rules)   uninstall_nested_rules "$dir" ;;
+      esac
     done
-  else
-    bold "Installing specs into .cursor/…"
     echo ""
-    for dir in "${spec_dirs[@]}"; do
-      if is_nested_spec_dir "$REPO_ROOT/$dir"; then
-        install_nested_spec_dir "$dir"
-      else
-        install_spec_dir "$dir"
-      fi
-    done
+    if $DRY_RUN; then
+      info "Dry-run complete. No changes were made."
+    else
+      ok "Uninstall complete."
+    fi
+    return
   fi
 
+  # ---- Install mode: select categories -----------------------------------
+  echo ""
+  local options=()
+  for dir in "${spec_dirs[@]}"; do
+    options+=("$(build_dir_label "$dir")")
+  done
+
+  local selected
+  selected=$(printf '%s\n' "${options[@]}" | gum choose --no-limit \
+    --header="Select categories to install  (SPACE toggle, ENTER confirm)" \
+    --cursor.foreground="6" \
+    --selected.foreground="2" \
+    --header.foreground="212") || { warn "No selection made."; exit 0; }
+
+  local selected_dirs=()
+  while IFS= read -r line; do
+    local name="${line%% *}"
+    name="${name%/}"
+    selected_dirs+=("$name")
+  done <<< "$selected"
+
+  # ---- For rules: select which rule sets ---------------------------------
+  local selected_rule_sets=()
+  for dir in "${selected_dirs[@]}"; do
+    if [[ "$(classify_dir "$dir")" == "nested-rules" ]]; then
+      local rule_groups=()
+      for subdir in "$REPO_ROOT/$dir"/*/; do
+        [[ -d "$subdir" ]] || continue
+        local setname
+        setname="$(basename "$subdir")"
+        local fcount=0
+        for ext in "${SPEC_EXTENSIONS[@]}"; do
+          for f in "$subdir"*."$ext"; do
+            [[ -f "$f" ]] && fcount=$((fcount + 1))
+          done
+        done
+        rule_groups+=("$(printf "%-14s  %s file(s)" "$setname" "$fcount")")
+      done
+
+      if (( ${#rule_groups[@]} > 1 )); then
+        echo ""
+        local rule_sel
+        rule_sel=$(printf '%s\n' "${rule_groups[@]}" | gum choose --no-limit \
+          --header="Select rule sets to install  (SPACE toggle, ENTER confirm)" \
+          --cursor.foreground="6" \
+          --selected.foreground="2" \
+          --header.foreground="212") || true
+        if [[ -n "$rule_sel" ]]; then
+          while IFS= read -r line; do
+            selected_rule_sets+=("${line%% *}")
+          done <<< "$rule_sel"
+        fi
+      fi
+    fi
+  done
+
+  # ---- Install selected categories ---------------------------------------
+  echo ""
+  label "Installing into .cursor/..."
+  echo ""
+
+  for dir in "${selected_dirs[@]}"; do
+    local kind
+    kind="$(classify_dir "$dir")"
+    case "$kind" in
+      flat)           install_flat "$dir" ;;
+      nested-skills)  install_nested_skills "$dir" ;;
+      nested-rules)   install_nested_rules "$dir" "${selected_rule_sets[@]}" ;;
+    esac
+  done
+
+  # ---- Summary -----------------------------------------------------------
   echo ""
   if $DRY_RUN; then
     info "Dry-run complete. No changes were made."
-  elif $UNINSTALL; then
-    ok "Uninstall complete."
   else
     ok "Install complete."
     echo ""
-    info "To update after pulling submodule changes, re-run:"
-    info "  bash $(relpath "$REPO_ROOT" "$PROJECT_ROOT")/cursor/install.sh"
+    info "To update after pulling changes, re-run:"
+    info "  bash $(relpath "${SCRIPT_DIR}" "$PROJECT_ROOT")/install.sh"
   fi
   echo ""
 }
