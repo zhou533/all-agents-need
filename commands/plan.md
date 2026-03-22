@@ -106,9 +106,8 @@ Agent（planner）：
 若你确认保存，请回复：
 - `save`
 
-保存路径规则：
-- 目录：`docs/plan`
-- 文件名：`YYYY-MM-DD-{plan功能简称}.md`
+保存规则：
+- 遵循planner agent的规范
 
 ## 与其他命令的集成
 
