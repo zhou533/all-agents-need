@@ -38,8 +38,6 @@ bash aan/cursor/init-mcp.sh
 | `skills/` | `.cursor/skills/` | 逐子目录 | Agent Skills |
 | `rules/` | `.cursor/rules/` | 逐文件 | 规则文件（未来扩展） |
 
-> **Skills 说明**：Skills 采用嵌套目录结构（如 `skills/brainstorming/SKILL.md`），安装脚本会自动识别并以**子目录为单位**创建符号链接，保留 Cursor Skills 要求的目录结构。
-
 ## 更新
 
 拉取 submodule 新版本后重新运行安装脚本即可：
@@ -86,8 +84,6 @@ all-agents-need/
 ├── commands/        → .cursor/commands/     (逐文件链接)
 │   └── plan.md
 ├── skills/          → .cursor/skills/       (逐子目录链接)
-│   └── brainstorming/
-│       └── SKILL.md
 ├── rules/           → .cursor/rules/        (示例，待扩展)
 │   └── coding.mdc
 ├── mcp/
@@ -109,10 +105,6 @@ all-agents-need/
 ### Commands
 
 - **/plan** — 在编写代码前先产出完整、可执行的实施计划
-
-### Skills
-
-- **brainstorming** — 在实施前进行协作式头脑风暴与设计探索
 
 ## 设计原则
 
