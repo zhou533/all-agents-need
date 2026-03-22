@@ -88,6 +88,34 @@ description: >-
 - 如果现有代码存在影响当前工作的问题（例如文件过大、边界不清、职责纠缠），将有针对性的改进纳入设计——就像优秀开发者在工作中顺手改进代码一样。
 - 不要提出无关的重构。聚焦于服务当前目标。
 
+## After the Design
+
+**Documentation:**
+
+- Write the validated design (spec) to `docs/brainstorming/specs/YYYY-MM-DD-<topic>-design.md`
+  - (User preferences for spec location override this default)
+- Use elements-of-style:writing-clearly-and-concisely skill if available
+- Commit the design document to git
+
+**Spec Review Loop:**
+After writing the spec document:
+
+1. Dispatch spec-document-reviewer subagent (see spec-document-reviewer-prompt.md)
+2. If Issues Found: fix, re-dispatch, repeat until Approved
+3. If loop exceeds 3 iterations, surface to human for guidance
+
+**User Review Gate:**
+After the spec review loop passes, ask the user to review the written spec before proceeding:
+
+> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
+
+Wait for the user's response. If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.
+
+**Implementation:**
+
+- Invoke the writing-plans skill to create a detailed implementation plan
+- Do NOT invoke any other skill. writing-plans is the next step.
+
 ## 核心原则
 
 - **每次一个问题** — 不要用多个问题让用户应接不暇
