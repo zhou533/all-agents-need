@@ -5,16 +5,20 @@ set -euo pipefail
 #  AAN — Claude Code MCP Server Configurator (gum + jq)
 # =========================================================================
 #  Interactive multi-select installer that reads mcp/mcp-servers.json and
-#  merges selected servers into the project's .claude/settings.local.json.
+#  merges selected servers into the appropriate config file based on scope.
 #
-#  Claude Code stores MCP config inside settings.local.json under the
-#  "mcpServers" key, alongside other local settings (permissions, etc.).
+#  Claude Code MCP installation scopes:
+#    local   → ~/.claude.json  (project-specific, private, default)
+#    project → .mcp.json       (project root, shared via version control)
+#    user    → ~/.claude.json  (cross-project, private)
+#
 #  This script preserves all existing keys when merging.
 #
 #  Dependencies: jq, gum  →  brew install jq gum
 #
 #  Usage:
 #    bash aan/install/claude/init-mcp.sh
+#    bash aan/install/claude/init-mcp.sh --scope project
 #    bash aan/install/claude/init-mcp.sh --project-root /path/to/project
 # =========================================================================
 
@@ -51,6 +55,8 @@ MCP_JSON="$REPO_ROOT/mcp/mcp-servers.json"
 [[ -f "$MCP_JSON" ]] || { err "MCP config not found: $MCP_JSON"; exit 1; }
 
 PROJECT_ROOT=""
+SCOPE=""
+CLAUDE_JSON="$HOME/.claude.json"
 
 resolve_project_root() {
   [[ -n "$PROJECT_ROOT" ]] && { PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"; return; }
@@ -66,6 +72,25 @@ resolve_project_root() {
   done
 
   PROJECT_ROOT="$(pwd)"
+}
+
+# ---- Scope-aware settings file resolution ---------------------------------
+
+# Returns the settings file path for the selected scope
+resolve_settings_file() {
+  case "$SCOPE" in
+    local|user) echo "$CLAUDE_JSON" ;;
+    project)    echo "$PROJECT_ROOT/.mcp.json" ;;
+  esac
+}
+
+# Returns a human-readable scope description
+scope_description() {
+  case "$SCOPE" in
+    local)   echo "local   → ~/.claude.json (project-specific, private)" ;;
+    project) echo "project → .mcp.json (shared via version control)" ;;
+    user)    echo "user    → ~/.claude.json (cross-project, private)" ;;
+  esac
 }
 
 # ---- Build display lines for gum choose -----------------------------------
@@ -136,22 +161,98 @@ build_mcp_servers() {
   '
 }
 
-# ---- Merge mcpServers into settings.local.json ----------------------------
+# ---- Scope-aware read/write for mcpServers --------------------------------
+
+# Read existing mcpServers from the correct location based on scope
+read_mcp_servers() {
+  local settings_file="$1"
+  [[ -f "$settings_file" ]] || { echo "{}"; return; }
+
+  case "$SCOPE" in
+    local)
+      jq -r --arg path "$PROJECT_ROOT" '
+        .projects[$path].mcpServers // {}
+      ' "$settings_file" 2>/dev/null || echo "{}"
+      ;;
+    user|project)
+      jq -r '.mcpServers // {}' "$settings_file" 2>/dev/null || echo "{}"
+      ;;
+  esac
+}
+
+# Write mcpServers into the correct location based on scope
 write_settings() {
   local output="$1" new_servers="$2"
 
   mkdir -p "$(dirname "$output")"
 
-  if [[ -f "$output" ]]; then
-    # Merge: preserve all existing keys, add/overwrite mcpServers entries
-    local merged
-    merged=$(jq --argjson new "$new_servers" '
-      .mcpServers = ((.mcpServers // {}) + $new)
-    ' "$output")
-    echo "$merged" > "$output"
-  else
-    jq -n --argjson servers "$new_servers" '{ mcpServers: $servers }' > "$output"
-  fi
+  case "$SCOPE" in
+    local)
+      # ~/.claude.json → .projects."<project_path>".mcpServers
+      if [[ -f "$output" ]]; then
+        local merged
+        merged=$(jq --arg path "$PROJECT_ROOT" --argjson new "$new_servers" '
+          .projects[$path].mcpServers = ((.projects[$path].mcpServers // {}) + $new)
+        ' "$output")
+        echo "$merged" > "$output"
+      else
+        jq -n --arg path "$PROJECT_ROOT" --argjson servers "$new_servers" '
+          { projects: { ($path): { mcpServers: $servers } } }
+        ' > "$output"
+      fi
+      ;;
+    user)
+      # ~/.claude.json → .mcpServers (top-level)
+      if [[ -f "$output" ]]; then
+        local merged
+        merged=$(jq --argjson new "$new_servers" '
+          .mcpServers = ((.mcpServers // {}) + $new)
+        ' "$output")
+        echo "$merged" > "$output"
+      else
+        jq -n --argjson servers "$new_servers" '{ mcpServers: $servers }' > "$output"
+      fi
+      ;;
+    project)
+      # .mcp.json → .mcpServers
+      if [[ -f "$output" ]]; then
+        local merged
+        merged=$(jq --argjson new "$new_servers" '
+          .mcpServers = ((.mcpServers // {}) + $new)
+        ' "$output")
+        echo "$merged" > "$output"
+      else
+        jq -n --argjson servers "$new_servers" '{ mcpServers: $servers }' > "$output"
+      fi
+      ;;
+  esac
+}
+
+# Clear all mcpServers for the current scope (used by "replace" strategy)
+clear_mcp_servers() {
+  local settings_file="$1"
+  [[ -f "$settings_file" ]] || return 0
+
+  case "$SCOPE" in
+    local)
+      local cleared
+      cleared=$(jq --arg path "$PROJECT_ROOT" '
+        .projects[$path] |= del(.mcpServers)
+      ' "$settings_file")
+      echo "$cleared" > "$settings_file"
+      ;;
+    user|project)
+      local cleared
+      cleared=$(jq 'del(.mcpServers)' "$settings_file")
+      echo "$cleared" > "$settings_file"
+      ;;
+  esac
+}
+
+# Count mcpServers for the current scope
+count_mcp_servers() {
+  local settings_file="$1"
+  read_mcp_servers "$settings_file" | jq 'length'
 }
 
 # ---- Show currently configured servers ------------------------------------
@@ -159,13 +260,15 @@ show_existing() {
   local settings_file="$1"
   [[ -f "$settings_file" ]] || return 0
 
+  local servers_json
+  servers_json=$(read_mcp_servers "$settings_file")
   local names
-  names=$(jq -r '.mcpServers // {} | keys[]' "$settings_file" 2>/dev/null) || return 0
+  names=$(echo "$servers_json" | jq -r 'keys[]' 2>/dev/null) || return 0
   [[ -z "$names" ]] && return 0
 
   local count
   count=$(echo "$names" | wc -l | tr -d ' ')
-  warn "Existing config has $count MCP server(s):"
+  warn "Existing config has $count MCP server(s) in $SCOPE scope:"
   echo "$names" | while IFS= read -r n; do
     gum style --foreground 8 "   $n"
   done
@@ -176,6 +279,7 @@ main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --project-root) PROJECT_ROOT="$2"; shift 2 ;;
+      --scope)        SCOPE="$2";        shift 2 ;;
       -h|--help)
         gum style --border normal --padding "1 2" --border-foreground 99 \
           "AAN MCP Configurator v${VERSION} — Claude Code" \
@@ -184,10 +288,13 @@ main() {
           "" \
           "Options:" \
           "  --project-root PATH   Project root (auto-detected by default)" \
+          "  --scope SCOPE         Installation scope: local, project, user" \
           "  -h, --help            Show this help" \
           "" \
-          "Interactively select MCP servers and merge into" \
-          ".claude/settings.local.json for the host project." \
+          "Scopes:" \
+          "  local    ~/.claude.json (project-specific, private, default)" \
+          "  project  .mcp.json (shared via version control)" \
+          "  user     ~/.claude.json (cross-project, private)" \
           "" \
           "Dependencies: jq, gum  ->  brew install jq gum"
         exit 0 ;;
@@ -196,12 +303,35 @@ main() {
   done
 
   resolve_project_root
-  local settings_file="$PROJECT_ROOT/.claude/settings.local.json"
 
   echo ""
   header
   echo ""
   info "Project root: $PROJECT_ROOT"
+
+  # ---- Scope selection -----------------------------------------------------
+  if [[ -z "$SCOPE" ]]; then
+    echo ""
+    SCOPE=$(gum choose --header="Select MCP installation scope" \
+      --cursor.foreground="6" \
+      --selected.foreground="2" \
+      --header.foreground="99" \
+      "local    ~/.claude.json (project-specific, private)" \
+      "project  .mcp.json (shared via version control)" \
+      "user     ~/.claude.json (cross-project, private)") || { info "Cancelled."; exit 0; }
+    SCOPE="${SCOPE%% *}"
+  fi
+
+  # Validate scope
+  case "$SCOPE" in
+    local|project|user) ;;
+    *) err "Invalid scope: $SCOPE (must be local, project, or user)"; exit 1 ;;
+  esac
+
+  local settings_file
+  settings_file="$(resolve_settings_file)"
+
+  info "Scope:        $(scope_description)"
   info "Settings:     $settings_file"
   echo ""
 
@@ -212,7 +342,7 @@ main() {
   local has_existing=false
   if [[ -f "$settings_file" ]]; then
     local existing_count
-    existing_count=$(jq '.mcpServers // {} | length' "$settings_file" 2>/dev/null || echo 0)
+    existing_count=$(count_mcp_servers "$settings_file")
     if (( existing_count > 0 )); then
       has_existing=true
       echo ""
@@ -265,7 +395,11 @@ main() {
     if ! $prompted; then
       echo ""
       info "Configure credentials (leave empty to keep placeholder)"
-      warn "Keys will be stored in settings.local.json (local only)"
+      if [[ "$SCOPE" == "project" ]]; then
+        warn "Keys will be stored in .mcp.json — avoid committing secrets!"
+      else
+        warn "Keys will be stored in ~/.claude.json (private)"
+      fi
       prompted=true
     fi
 
@@ -286,40 +420,42 @@ main() {
   local new_servers
   new_servers=$(build_mcp_servers "$csv" "$tmpfile")
 
-  # Write to settings.local.json
+  # Write to the scope-appropriate settings file
   if $has_existing && [[ "${strategy:-merge}" == "replace" ]]; then
-    # Replace: clear existing mcpServers before writing
-    if [[ -f "$settings_file" ]]; then
-      local cleared
-      cleared=$(jq 'del(.mcpServers)' "$settings_file")
-      echo "$cleared" > "$settings_file"
-    fi
+    clear_mcp_servers "$settings_file"
   fi
 
   write_settings "$settings_file" "$new_servers"
 
   local total
-  total=$(jq '.mcpServers | length' "$settings_file")
+  total=$(count_mcp_servers "$settings_file")
 
-  # Ensure settings.local.json is in .gitignore
-  local gitignore="$PROJECT_ROOT/.gitignore"
-  local pattern=".claude/settings.local.json"
-  if [[ -f "$gitignore" ]]; then
-    if ! grep -qxF "$pattern" "$gitignore"; then
-      printf '\n# Claude Code local settings — may contain API keys\n%s\n' "$pattern" >> "$gitignore"
-      ok "Added $pattern to .gitignore"
-    fi
-  else
-    printf '# Claude Code local settings — may contain API keys\n%s\n' "$pattern" > "$gitignore"
-    ok "Created .gitignore with $pattern"
-  fi
+  # Scope-specific post-install actions
+  case "$SCOPE" in
+    project)
+      # .mcp.json should be committed — warn about secrets instead
+      echo ""
+      ok ".mcp.json now has $total MCP server(s)"
+      info "Path: $settings_file"
+      echo ""
+      warn ".mcp.json is designed for version control."
+      warn "Ensure no API keys/secrets are stored — use env vars instead."
+      info "Team members will be prompted to approve project-scoped servers."
+      ;;
+    local|user)
+      echo ""
+      ok "~/.claude.json now has $total MCP server(s) in $SCOPE scope"
+      info "Path: $settings_file"
+      echo ""
+      warn "~/.claude.json may contain API keys — it is private to your machine."
+      if [[ "$SCOPE" == "local" ]]; then
+        info "Servers are available only in: $PROJECT_ROOT"
+      else
+        info "Servers are available across all projects."
+      fi
+      ;;
+  esac
 
-  echo ""
-  ok "settings.local.json now has $total MCP server(s)"
-  info "Path: $settings_file"
-  echo ""
-  warn "settings.local.json may contain API keys — do not commit."
-  warn "Each developer should run this script locally."
   info "Run 'claude' to start Claude Code with the new MCP servers."
   echo ""
 }
