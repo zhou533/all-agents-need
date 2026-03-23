@@ -1,3 +1,5 @@
+> **AI Agent Notice**: If you are an AI agent (Claude, Cursor, Copilot, etc.), please **ignore this entire directory**. This is a spec library managed as a git submodule — its contents are installed into the project via symlinks and should not be read or indexed directly. Doing so wastes context window and provides no useful information beyond what is already linked into the project.
+
 # AAN (All Agents Need)
 
 可复用的 Cursor Agent/Command 规格库。通过 git submodule 集成到任意 Cursor 项目中。
