@@ -87,6 +87,29 @@ resolve_paths() {
   exit 1
 }
 
+# ---- .claudeignore -------------------------------------------------------
+ensure_claudeignore() {
+  local ignore_file="$PROJECT_ROOT/.claudeignore"
+  if [[ -f "$ignore_file" ]]; then
+    return
+  fi
+
+  local aan_rel
+  aan_rel="$(relpath "$REPO_ROOT" "$PROJECT_ROOT")"
+
+  if $DRY_RUN; then
+    info "Would create $ignore_file with entry: ${aan_rel}/"
+    return
+  fi
+
+  cat > "$ignore_file" <<EOF
+# AAN (All Agents Need) — spec repository
+# Ignored so Claude agents skip this directory and save context
+${aan_rel}/
+EOF
+  ok "Created .claudeignore (ignoring ${aan_rel}/)"
+}
+
 # ---- Discovery -----------------------------------------------------------
 
 # Discover all installable spec directories (flat or nested)
@@ -616,6 +639,9 @@ main() {
   $DRY_RUN  && warn "Mode: dry-run (no changes will be made)"
   $USE_COPY && warn "Mode: copy (files will be copied, not symlinked)"
   $UNINSTALL && warn "Mode: uninstall"
+
+  # Ensure .claudeignore exists in the project root
+  ensure_claudeignore
 
   # Discover spec directories
   local spec_dirs_str
