@@ -9,6 +9,7 @@ set -euo pipefail
 #  Optionally configures MCP servers in .claude/settings.local.json.
 #
 #  Dependencies: gum  →  brew install gum
+#                jq   →  brew install jq
 #
 #  Usage:
 #    bash aan/install/claude/install.sh
@@ -22,6 +23,14 @@ if ! command -v gum &>/dev/null; then
   echo ""
   echo "  gum is required but not found."
   echo "  Install:  brew install gum"
+  echo ""
+  exit 1
+fi
+
+if ! command -v jq &>/dev/null; then
+  echo ""
+  echo "  jq is required but not found."
+  echo "  Install:  brew install jq"
   echo ""
   exit 1
 fi
@@ -87,27 +96,49 @@ resolve_paths() {
   exit 1
 }
 
-# ---- .claudeignore -------------------------------------------------------
-ensure_claudeignore() {
-  local ignore_file="$PROJECT_ROOT/.claudeignore"
-  if [[ -f "$ignore_file" ]]; then
-    return
+# ---- Deny permissions in .claude/settings.json ---------------------------
+ensure_deny_permissions() {
+  local settings_dir="$PROJECT_ROOT/.claude"
+  local settings_file="$settings_dir/settings.json"
+  # Derive the submodule directory name under project root
+  # e.g. user ran: git submodule add <url> aan  →  aan_rel="aan"
+  local aan_rel="${REPO_ROOT#"$PROJECT_ROOT"/}"
+  if [[ "$aan_rel" == "$REPO_ROOT" ]]; then
+    err "AAN repo is not under project root — cannot compute submodule path."
+    err "Ensure the AAN repo is a submodule of the project."
+    return 1
   fi
 
-  local aan_rel
-  aan_rel="$(relpath "$REPO_ROOT" "$PROJECT_ROOT")"
+  # Deny patterns to prevent Claude from reading the AAN submodule
+  local deny_patterns=(
+    "Read ${aan_rel}/**"
+    "Glob ${aan_rel}/**"
+    "Grep ${aan_rel}/**"
+  )
 
   if $DRY_RUN; then
-    info "Would create $ignore_file with entry: ${aan_rel}/"
+    info "Would add permissions.deny to $settings_file:"
+    for p in "${deny_patterns[@]}"; do
+      info "  - $p"
+    done
     return
   fi
 
-  cat > "$ignore_file" <<EOF
-# AAN (All Agents Need) — spec repository
-# Ignored so Claude agents skip this directory and save context
-${aan_rel}/
-EOF
-  ok "Created .claudeignore (ignoring ${aan_rel}/)"
+  mkdir -p "$settings_dir"
+
+  # Create settings.json if it doesn't exist
+  if [[ ! -f "$settings_file" ]]; then
+    echo '{}' > "$settings_file"
+  fi
+
+  # Merge deny patterns into permissions.deny (deduplicated)
+  local updated
+  updated=$(jq --argjson new "$(printf '%s\n' "${deny_patterns[@]}" | jq -R . | jq -s .)" '
+    .permissions.deny = ((.permissions.deny // []) + $new | unique)
+  ' "$settings_file") || { err "Failed to update $settings_file"; return 1; }
+
+  echo "$updated" > "$settings_file"
+  ok "Updated .claude/settings.json (deny read access to ${aan_rel}/)"
 }
 
 # ---- Discovery -----------------------------------------------------------
@@ -640,8 +671,8 @@ main() {
   $USE_COPY && warn "Mode: copy (files will be copied, not symlinked)"
   $UNINSTALL && warn "Mode: uninstall"
 
-  # Ensure .claudeignore exists in the project root
-  ensure_claudeignore
+  # Deny Claude agent access to the AAN submodule directory
+  ensure_deny_permissions
 
   # Discover spec directories
   local spec_dirs_str
