@@ -1,32 +1,23 @@
 ---
-description: 通过 Context7 查找库或主题的当前文档。
+description: documentation-lookup 技能的遗留 slash 入口 shim。请优先直接使用该技能。
 ---
 
-# /docs
+# Docs 命令（遗留 Shim）
 
-## 目的
+仅在你仍然习惯输入 `/docs` 时使用本命令。真正维护的工作流位于 `skills/documentation-lookup/SKILL.md`。
 
-查找库、框架或 API 的最新文档，并返回包含相关代码片段的摘要答案。使用 Context7 MCP（resolve-library-id 和 query-docs），因此答案反映的是当前文档，而非训练数据。
+## 权威入口（Canonical Surface）
 
-## 用法
+- 优先直接使用 `documentation-lookup` 技能。
+- 本文件仅作为兼容入口保留。
 
-```
-/docs [library name] [question]
-```
+## 参数
 
-对于多单词参数，使用引号以便它们被解析为单个标记。示例：`/docs "Next.js" "How do I configure middleware?"`
+`$ARGUMENTS`
 
-如果省略了库或问题，则提示用户输入：
+## 委派（Delegation）
 
-1. 库或产品名称（例如 Next.js、Prisma、Supabase）。
-2. 具体问题或任务（例如“如何设置中间件？”、“认证方法”）。
-
-## 工作流程
-
-1. **解析库 ID** — 调用 Context7 工具 `resolve-library-id`，传入库名称和用户问题，以获取 Context7 兼容的库 ID（例如 `/vercel/next.js`）。
-2. **查询文档** — 使用该库 ID 和用户问题调用 `query-docs`。
-3. **总结** — 返回简洁的答案，并包含从获取的文档中提取的相关代码示例。提及库（如果相关，包括版本）。
-
-## 输出
-
-用户收到一个简短、准确的答案，该答案基于当前文档，并附带任何有帮助的代码片段。如果 Context7 不可用，则说明情况，并根据训练数据回答问题，并注明文档可能已过时。
+应用 `documentation-lookup` 技能。
+- 如果缺少库名或具体问题，向用户追问缺失的部分。
+- 通过 Context7 使用实时文档，而不是依赖训练数据。
+- 只返回当前的答案以及所需的最小代码/示例。
