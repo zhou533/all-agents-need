@@ -1,7 +1,7 @@
 ---
 name: backend-patterns
 description: 后端架构模式、API设计、数据库优化以及适用于Node.js、Express和Next.js API路由的服务器端最佳实践。
-origin: ECC
+origin: AAN
 ---
 
 # 后端开发模式
@@ -23,7 +23,7 @@ origin: ECC
 ### RESTful API 结构
 
 ```typescript
-// ✅ Resource-based URLs
+// PASS: Resource-based URLs
 GET    /api/markets                 # List resources
 GET    /api/markets/:id             # Get single resource
 POST   /api/markets                 # Create resource
@@ -31,7 +31,7 @@ PUT    /api/markets/:id             # Replace resource
 PATCH  /api/markets/:id             # Update resource
 DELETE /api/markets/:id             # Delete resource
 
-// ✅ Query parameters for filtering, sorting, pagination
+// PASS: Query parameters for filtering, sorting, pagination
 GET /api/markets?status=active&sort=volume&limit=20&offset=0
 ```
 
@@ -131,7 +131,7 @@ export default withAuth(async (req, res) => {
 ### 查询优化
 
 ```typescript
-// ✅ GOOD: Select only needed columns
+// PASS: GOOD: Select only needed columns
 const { data } = await supabase
   .from('markets')
   .select('id, name, status, volume')
@@ -139,7 +139,7 @@ const { data } = await supabase
   .order('volume', { ascending: false })
   .limit(10)
 
-// ❌ BAD: Select everything
+// FAIL: BAD: Select everything
 const { data } = await supabase
   .from('markets')
   .select('*')
@@ -148,13 +148,13 @@ const { data } = await supabase
 ### N+1 查询预防
 
 ```typescript
-// ❌ BAD: N+1 query problem
+// FAIL: BAD: N+1 query problem
 const markets = await getMarkets()
 for (const market of markets) {
   market.creator = await getUser(market.creator_id)  // N queries
 }
 
-// ✅ GOOD: Batch fetch
+// PASS: GOOD: Batch fetch
 const markets = await getMarkets()
 const creatorIds = markets.map(m => m.creator_id)
 const creators = await getUsers(creatorIds)  // 1 query
@@ -189,7 +189,7 @@ CREATE OR REPLACE FUNCTION create_market_with_position(
 )
 RETURNS jsonb
 LANGUAGE plpgsql
-AS $
+AS $$
 BEGIN
   -- Start transaction automatically
   INSERT INTO markets VALUES (market_data);

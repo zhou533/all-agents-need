@@ -1,7 +1,7 @@
 ---
 name: tdd-workflow
 description: 在编写新功能、修复错误或重构代码时使用此技能。强制执行测试驱动开发，确保单元测试、集成测试和端到端测试的覆盖率超过80%。
-origin: ECC
+origin: AAN
 ---
 
 # 测试驱动开发工作流
@@ -390,28 +390,28 @@ npm run test:coverage
 
 ## 应避免的常见测试错误
 
-### ❌ 错误：测试实现细节
+### FAIL: 错误：测试实现细节
 
 ```typescript
 // Don't test internal state
 expect(component.state.count).toBe(5)
 ```
 
-### ✅ 正确：测试用户可见的行为
+### PASS: 正确：测试用户可见的行为
 
 ```typescript
 // Test what users see
 expect(screen.getByText('Count: 5')).toBeInTheDocument()
 ```
 
-### ❌ 错误：脆弱的定位器
+### FAIL: 错误：脆弱的定位器
 
 ```typescript
 // Breaks easily
 await page.click('.css-class-xyz')
 ```
 
-### ✅ 正确：语义化定位器
+### PASS: 正确：语义化定位器
 
 ```typescript
 // Resilient to changes
@@ -419,7 +419,7 @@ await page.click('button:has-text("Submit")')
 await page.click('[data-testid="submit-button"]')
 ```
 
-### ❌ 错误：没有测试隔离
+### FAIL: 错误：没有测试隔离
 
 ```typescript
 // Tests depend on each other
@@ -427,7 +427,7 @@ test('creates user', () => { /* ... */ })
 test('updates same user', () => { /* depends on previous test */ })
 ```
 
-### ✅ 正确：独立的测试
+### PASS: 正确：独立的测试
 
 ```typescript
 // Each test sets up its own data

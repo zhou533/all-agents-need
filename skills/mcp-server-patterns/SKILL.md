@@ -1,12 +1,14 @@
 ---
 name: mcp-server-patterns
 description: 使用Node/TypeScript SDK构建MCP服务器——工具、资源、提示、Zod验证、stdio与可流式HTTP对比。使用Context7或官方MCP文档获取最新API信息。
-origin: ECC
+origin: AAN
 ---
 
 # MCP 服务器模式
 
 模型上下文协议（MCP）允许 AI 助手调用工具、读取资源和使用来自服务器的提示。在构建或维护 MCP 服务器时使用此技能。SDK API 会演进；请查阅 Context7（查询文档 "MCP"）或官方 MCP 文档以获取当前的方法名称和签名。
+
+关于"某能力应该落在 rule、skill、MCP 还是普通 CLI/API 流程"的更大尺度路由决策，参见 [docs/capability-surface-selection.md](../../docs/capability-surface-selection.md)。
 
 ## 何时使用
 

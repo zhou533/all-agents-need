@@ -1,7 +1,7 @@
 ---
 name: continuous-learning
 description: 自动从Claude Code会话中提取可重复使用的模式，并将其保存为学习到的技能以供将来使用。
-origin: ECC
+origin: AAN
 ---
 
 # 持续学习技能
@@ -15,6 +15,10 @@ origin: ECC
 * 在 `~/.claude/skills/learned/` 中审查或整理已学习的技能
 * 调整提取阈值或模式类别
 * 比较 v1（本方法）与 v2（基于本能的方法）
+
+## 状态
+
+此 v1 技能仍受支持，但新安装推荐使用 `continuous-learning-v2`。当你明确需要更简单的 Stop-hook 提取流程，或需要与旧的已学习技能工作流兼容时，保留 v1。
 
 ## 工作原理
 
