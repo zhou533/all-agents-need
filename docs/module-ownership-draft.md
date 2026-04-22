@@ -1,8 +1,15 @@
-# AAN 模块归属草案 v3
+# AAN 模块归属草案 v3.1
 
 > **状态**：草案（draft）。仅作为后续 `install/manifests/*.json` 的设计输入与 feature-based 组织形式的过渡产物。**不代表**目录将立即重组。
 >
-> **版本**：v3（2026-04-22）
+> **版本**：v3.1（2026-04-22）
+> **v3 → v3.1 主要变动**：
+>
+> * 新增 `golang-testing` skill（归 golang）
+> * 新增 `python-testing` skill（归 python）
+> * §3 模块容量表更新：golang.skills 1→2（合计 9）、python.skills 1→2（合计 8）、skills 总 18→20、总合计 135→137
+> * §4 Skills 归属表追加两行
+>
 > **v2 → v3 主要变动**：
 >
 > * 纳入 `hooks/hooks.json` 中 26 个 hook 的模块归属（新增 §8）
@@ -56,13 +63,13 @@ aan 当前采用 **type-based** 目录（`skills/`、`agents/`、`commands/`、`
 | continuous-learning | 2 | 0 | 6 | 0 | 3 | 11 |
 | typescript | 0 | 1 | 0 | 5 | 4 | 10 |
 | rust | 2 | 2 | 0 | 5 | 0 | 9 |
-| golang | 1 | 2 | 0 | 5 | 0 | 8 |
-| python | 1 | 1 | 0 | 5 | 0 | 7 |
+| golang | 2 | 2 | 0 | 5 | 0 | 9 |
+| python | 2 | 1 | 0 | 5 | 0 | 8 |
 | prp | 0 | 0 | 5 | 0 | 0 | 5 |
 | mcp | 1 | 0 | 0 | 0 | 2 | 3 |
 | database | 2 | 1 | 0 | 0 | 0 | 3 |
 | ml | 0 | 1 | 0 | 0 | 0 | 1 |
-| **合计** | **18** | **27** | **28** | **37** | **26** | **135** |
+| **合计** | **20** | **27** | **28** | **37** | **26** | **137** |
 
 > `agents` 合计 27，其中 pytorch-build-resolver 同时计入 ml（或 python 暂入）；`commands` 合计 28 指归入各语言/主题模块的数量，剩余 1 项（`e2e`）归入 web。`hooks` 合计 26 按 hook id 唯一归属。
 
@@ -82,7 +89,9 @@ aan 当前采用 **type-based** 目录（`skills/`、`agents/`、`commands/`、`
 | rust-patterns | rust |
 | rust-testing | rust |
 | golang-patterns | golang |
+| golang-testing | golang |
 | python-patterns | python |
+| python-testing | python |
 | postgres-patterns | database |
 | database-migrations | database |
 | mcp-server-patterns | mcp |
