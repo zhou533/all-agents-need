@@ -1,0 +1,240 @@
+{
+  "$schema_version": "1",
+  "modules": {
+    "common": {
+      "description": "跨语言、跨主题的横向能力（必装底座）",
+      "required": true,
+      "depends_on": [],
+      "skills": [
+        "api-design",
+        "backend-patterns",
+        "coding-standards",
+        "documentation-lookup",
+        "security-review",
+        "tdd-workflow",
+        "verification-loop"
+      ],
+      "agents": [
+        "architect.md",
+        "code-architect.md",
+        "planner.md",
+        "code-reviewer.md",
+        "code-explorer.md",
+        "code-simplifier.md",
+        "refactor-cleaner.md",
+        "build-error-resolver.md",
+        "performance-optimizer.md",
+        "security-reviewer.md",
+        "silent-failure-hunter.md",
+        "type-design-analyzer.md",
+        "pr-test-analyzer.md",
+        "tdd-guide.md",
+        "doc-updater.md",
+        "docs-lookup.md"
+      ],
+      "commands": [
+        "plan.md",
+        "feature-dev.md",
+        "code-review.md",
+        "review-pr.md",
+        "refactor-clean.md",
+        "build-fix.md",
+        "quality-gate.md",
+        "verify.md",
+        "test-coverage.md",
+        "tdd.md",
+        "tdd-v2.md",
+        "docs.md",
+        "update-codemaps.md",
+        "update-docs.md"
+      ],
+      "rules": [
+        "common/agents.md",
+        "common/code-review.md",
+        "common/coding-style.md",
+        "common/development-workflow.md",
+        "common/git-workflow.md",
+        "common/hooks.md",
+        "common/patterns.md",
+        "common/performance.md",
+        "common/security.md",
+        "common/testing.md"
+      ],
+      "hooks": [
+        "pre:bash:dispatcher",
+        "pre:write:doc-file-warning",
+        "pre:governance-capture",
+        "pre:config-protection",
+        "pre:edit-write:gateguard-fact-force",
+        "session:start",
+        "post:bash:dispatcher",
+        "post:quality-gate",
+        "post:governance-capture"
+      ]
+    },
+    "web": {
+      "description": "Web 前端通用 + E2E + 性能 + 设计品质",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": ["e2e-testing", "frontend-patterns"],
+      "agents": ["e2e-runner.md"],
+      "commands": ["e2e.md"],
+      "rules": [
+        "web/coding-style.md",
+        "web/design-quality.md",
+        "web/hooks.md",
+        "web/patterns.md",
+        "web/performance.md",
+        "web/security.md",
+        "web/testing.md"
+      ],
+      "hooks": ["post:edit:design-quality-check"]
+    },
+    "harness-ops": {
+      "description": "harness 自身运维、观测与 UX",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": [],
+      "agents": ["harness-optimizer.md", "loop-operator.md"],
+      "commands": ["harness-audit.md", "skill-create.md"],
+      "rules": [],
+      "hooks": [
+        "pre:edit-write:suggest-compact",
+        "pre:compact",
+        "post:session-activity-tracker",
+        "stop:session-end",
+        "stop:cost-tracker",
+        "stop:desktop-notify",
+        "session:end:marker"
+      ]
+    },
+    "continuous-learning": {
+      "description": "持续学习与 instinct 系统",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": ["continuous-learning", "continuous-learning-v2"],
+      "agents": [],
+      "commands": [
+        "learn.md",
+        "evolve.md",
+        "promote.md",
+        "projects.md",
+        "instinct-export.md",
+        "instinct-import.md",
+        "instinct-status.md"
+      ],
+      "rules": [],
+      "hooks": [
+        "pre:observe:continuous-learning",
+        "post:observe:continuous-learning",
+        "stop:evaluate-session"
+      ]
+    },
+    "typescript": {
+      "description": "TypeScript / JavaScript 语言全链路",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": [],
+      "agents": ["typescript-reviewer.md"],
+      "commands": [],
+      "rules": [
+        "typescript/coding-style.md",
+        "typescript/hooks.md",
+        "typescript/patterns.md",
+        "typescript/security.md",
+        "typescript/testing.md"
+      ],
+      "hooks": [
+        "post:edit:accumulator",
+        "post:edit:console-warn",
+        "stop:format-typecheck",
+        "stop:check-console-log"
+      ]
+    },
+    "rust": {
+      "description": "Rust 语言全链路",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": ["rust-patterns", "rust-testing"],
+      "agents": ["rust-build-resolver.md", "rust-reviewer.md"],
+      "commands": [],
+      "rules": [
+        "rust/coding-style.md",
+        "rust/hooks.md",
+        "rust/patterns.md",
+        "rust/security.md",
+        "rust/testing.md"
+      ],
+      "hooks": []
+    },
+    "golang": {
+      "description": "Go 语言全链路",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": ["golang-patterns", "golang-testing"],
+      "agents": ["go-build-resolver.md", "go-reviewer.md"],
+      "commands": [],
+      "rules": [
+        "golang/coding-style.md",
+        "golang/hooks.md",
+        "golang/patterns.md",
+        "golang/security.md",
+        "golang/testing.md"
+      ],
+      "hooks": []
+    },
+    "python": {
+      "description": "Python 语言全链路（含 PyTorch 候选）",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": ["python-patterns", "python-testing"],
+      "agents": ["python-reviewer.md", "pytorch-build-resolver.md"],
+      "commands": [],
+      "rules": [
+        "python/coding-style.md",
+        "python/hooks.md",
+        "python/patterns.md",
+        "python/security.md",
+        "python/testing.md"
+      ],
+      "hooks": [],
+      "notes": "pytorch-build-resolver 为 ml 候选，达到 ≥3 项 ML 资源时拆出独立 ml 模块"
+    },
+    "database": {
+      "description": "数据库设计、迁移、PostgreSQL",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": ["postgres-patterns", "database-migrations"],
+      "agents": ["database-reviewer.md"],
+      "commands": [],
+      "rules": [],
+      "hooks": []
+    },
+    "mcp": {
+      "description": "MCP server 开发",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": ["mcp-server-patterns"],
+      "agents": [],
+      "commands": [],
+      "rules": [],
+      "hooks": ["pre:mcp-health-check", "post:mcp-health-check"]
+    },
+    "prp": {
+      "description": "Plan-Review-Process 流水线",
+      "required": false,
+      "depends_on": ["common"],
+      "skills": [],
+      "agents": [],
+      "commands": [
+        "prp-plan.md",
+        "prp-implement.md",
+        "prp-pr.md",
+        "prp-prd.md",
+        "prp-commit.md"
+      ],
+      "rules": [],
+      "hooks": []
+    }
+  }
+}
