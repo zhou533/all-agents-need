@@ -2,5 +2,6 @@
 .cursor/mcp.json
 .DS_Store
 
-# Claude Code local settings — may contain API keys
-.claude/settings.local.json
+# Claude Code project config — 本仓库是 AAN 源，不应在此安装 .claude/；
+# 若有人在 AAN 根误跑 install.sh，生成物也不应入库
+.claude/

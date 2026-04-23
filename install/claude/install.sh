@@ -1,795 +1,544 @@
 #!/usr/bin/env bash
+#
+# AAN (all-agents-need) 安装器
+# 把 AAN 的模块化资源按选择安装到项目级 .claude/ 目录
+#
+# 用法：
+#   1. git submodule add <AAN 仓库> 到项目根
+#   2. 在项目根运行：bash <submodule-path>/install/claude/install.sh
+#
+# 依赖：bash ≥4、jq、gum
+#
 set -euo pipefail
 
-# =========================================================================
-#  AAN (All Agents Need) — Claude Code Project Installer
-# =========================================================================
-#  Discovers spec directories (agents, commands, rules, skills, templates)
-#  and installs them into the host project's .claude/ folder.
-#  Optionally configures MCP servers in .claude/settings.local.json.
-#
-#  Dependencies: gum  →  brew install gum
-#                jq   →  brew install jq
-#
-#  Usage:
-#    bash aan/install/claude/install.sh
-#    bash aan/install/claude/install.sh --project-root /path/to/project
-# =========================================================================
+# ===== 常量 =====
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly AAN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+readonly SCHEMA_VERSION_SUPPORTED="1"
 
-VERSION="1.0.0"
+# ===== 资源注册表 =====
+# 格式: type_id|aan_source|target_kind|target_path|handler
+readonly RESOURCE_REGISTRY=(
+  "skills|skills|dir|.claude/skills|handle_copy_tree"
+  "agents|agents|file|.claude/agents|handle_copy_file"
+  "commands|commands|file|.claude/commands|handle_copy_file"
+  "rules|rules|file|.claude/rules|handle_copy_file_preserve_path"
+  "output-styles|output-styles|file|.claude/output-styles|handle_copy_file"
+  "hooks|hooks/hooks.json|json_field|.claude/settings.json|handle_hooks_merge"
+  "mcps|mcp/mcp-servers.json|json_field|.mcp.json|handle_mcp_merge"
+)
 
-# ---- Dependency check ----------------------------------------------------
-if ! command -v gum &>/dev/null; then
-  echo ""
-  echo "  gum is required but not found."
-  echo "  Install:  brew install gum"
-  echo ""
-  exit 1
-fi
-
-if ! command -v jq &>/dev/null; then
-  echo ""
-  echo "  jq is required but not found."
-  echo "  Install:  brew install jq"
-  echo ""
-  exit 1
-fi
-
-# ---- Path resolution -----------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
-# ---- Defaults ------------------------------------------------------------
-FORCE=false
-UNINSTALL=false
-DRY_RUN=false
-USE_COPY=false
-PROJECT_ROOT=""
-SPEC_EXTENSIONS=("md" "mdc")
-# Directories excluded from auto-discovery
-EXCLUDE_DIRS=(".git" ".claude" "node_modules" "__pycache__" ".venv" "docs" "install" "mcp")
-
-# ---- Helpers (gum-based) -------------------------------------------------
-header() {
-  gum style --border double --align center --padding "1 4" \
-    --border-foreground 99 --foreground 99 --bold \
-    "AAN Installer v${VERSION}" "Claude Code"
-}
-
-info()  { gum style --foreground 6 "ℹ  $*"; }
-ok()    { gum style --foreground 2 "✓  $*"; }
-warn()  { gum style --foreground 3 "⚠  $*"; }
-err()   { gum style --foreground 1 "✗  $*" >&2; }
-label() { gum style --bold "$*"; }
-
-relpath() {
-  python3 -c "import os.path,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$1" "$2"
-}
-
-# ---- Path Resolution -----------------------------------------------------
-resolve_paths() {
-  if [[ -n "$PROJECT_ROOT" ]]; then
-    PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
-    return
-  fi
-
-  # Method 1: git superproject (works when we are a submodule)
-  local super
-  super="$(cd "$REPO_ROOT" && git rev-parse --show-superproject-working-tree 2>/dev/null || true)"
-  if [[ -n "$super" ]]; then
-    PROJECT_ROOT="$super"
-    return
-  fi
-
-  # Method 2: walk up from REPO_ROOT looking for a parent .git
-  local dir="$REPO_ROOT"
-  while [[ "$dir" != "/" ]]; do
-    dir="$(dirname "$dir")"
-    if [[ -d "$dir/.git" || -f "$dir/.git" ]]; then
-      PROJECT_ROOT="$dir"
-      return
-    fi
+registry_types() {
+  local entry
+  for entry in "${RESOURCE_REGISTRY[@]}"; do
+    echo "${entry%%|*}"
   done
-
-  err "Could not detect project root."
-  err "Run with --project-root <path> to specify it manually."
-  exit 1
 }
 
-# ---- Deny permissions in .claude/settings.json ---------------------------
-ensure_deny_permissions() {
-  local settings_dir="$PROJECT_ROOT/.claude"
-  local settings_file="$settings_dir/settings.json"
-  # Derive the submodule directory name under project root
-  # e.g. user ran: git submodule add <url> aan  →  aan_rel="aan"
-  local aan_rel="${REPO_ROOT#"$PROJECT_ROOT"/}"
-  if [[ "$aan_rel" == "$REPO_ROOT" ]]; then
-    err "AAN repo is not under project root — cannot compute submodule path."
-    err "Ensure the AAN repo is a submodule of the project."
-    return 1
-  fi
-
-  # Deny patterns to prevent Claude from reading the AAN submodule
-  local deny_patterns=(
-    "Read ${aan_rel}/**"
-    "Glob ${aan_rel}/**"
-    "Grep ${aan_rel}/**"
-  )
-
-  if $DRY_RUN; then
-    info "Would add permissions.deny to $settings_file:"
-    for p in "${deny_patterns[@]}"; do
-      info "  - $p"
-    done
-    return
-  fi
-
-  mkdir -p "$settings_dir"
-
-  # Create settings.json if it doesn't exist
-  if [[ ! -f "$settings_file" ]]; then
-    echo '{}' > "$settings_file"
-  fi
-
-  # Merge deny patterns into permissions.deny (deduplicated)
-  local updated
-  updated=$(jq --argjson new "$(printf '%s\n' "${deny_patterns[@]}" | jq -R . | jq -s .)" '
-    .permissions.deny = ((.permissions.deny // []) + $new | unique)
-  ' "$settings_file") || { err "Failed to update $settings_file"; return 1; }
-
-  echo "$updated" > "$settings_file"
-  ok "Updated .claude/settings.json (deny read access to ${aan_rel}/)"
-}
-
-# ---- Discovery -----------------------------------------------------------
-
-# Discover all installable spec directories (flat or nested)
-discover_spec_dirs() {
-  local dirs=()
-  for dir in "$REPO_ROOT"/*/; do
-    [[ -d "$dir" ]] || continue
-    local dirname
-    dirname="$(basename "$dir")"
-
-    local skip=false
-    for ex in "${EXCLUDE_DIRS[@]}"; do
-      [[ "$dirname" == "$ex" ]] && { skip=true; break; }
-    done
-    $skip && continue
-
-    local found=false
-    # Check for flat spec files
-    for ext in "${SPEC_EXTENSIONS[@]}"; do
-      if compgen -G "$dir*.$ext" > /dev/null 2>&1; then
-        found=true; break
-      fi
-    done
-    # Check for nested structure (subdirs containing spec files)
-    if ! $found; then
-      for subdir in "$dir"/*/; do
-        [[ -d "$subdir" ]] || continue
-        for ext in "${SPEC_EXTENSIONS[@]}"; do
-          if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
-            found=true; break 2
-          fi
-        done
-      done
-    fi
-    $found && dirs+=("$dirname")
-  done
-  echo "${dirs[@]}"
-}
-
-# Classify a spec directory as "flat", "nested-skills" (symlink subdirs),
-# or "nested-rules" (preserve subdirs, symlink files within)
-classify_dir() {
-  local dir="$REPO_ROOT/$1"
-
-  # Check if it has subdirectories with spec files
-  local has_nested=false
-  for subdir in "$dir"/*/; do
-    [[ -d "$subdir" ]] || continue
-    for ext in "${SPEC_EXTENSIONS[@]}"; do
-      if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
-        has_nested=true; break 2
-      fi
-    done
-  done
-
-  if ! $has_nested; then
-    echo "flat"
-    return
-  fi
-
-  # skills → symlink entire subdirectory; rules → symlink files within subdirs
-  case "$1" in
-    skills) echo "nested-skills" ;;
-    *)      echo "nested-rules" ;;
-  esac
-}
-
-# Count files in a spec directory
-count_spec_files() {
-  local dir="$REPO_ROOT/$1"
-  local count=0
-  local kind
-  kind="$(classify_dir "$1")"
-
-  case "$kind" in
-    flat)
-      for ext in "${SPEC_EXTENSIONS[@]}"; do
-        for f in "$dir"/*."$ext"; do
-          [[ -f "$f" ]] && count=$((count + 1))
-        done
-      done
-      ;;
-    nested-skills)
-      for subdir in "$dir"/*/; do
-        [[ -d "$subdir" ]] || continue
-        local has_specs=false
-        for ext in "${SPEC_EXTENSIONS[@]}"; do
-          if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
-            has_specs=true; break
-          fi
-        done
-        $has_specs && count=$((count + 1))
-      done
-      ;;
-    nested-rules)
-      for subdir in "$dir"/*/; do
-        [[ -d "$subdir" ]] || continue
-        for ext in "${SPEC_EXTENSIONS[@]}"; do
-          for f in "$subdir"*."$ext"; do
-            [[ -f "$f" ]] && count=$((count + 1))
-          done
-        done
-      done
-      ;;
-  esac
-  echo "$count"
-}
-
-# Build display label for a spec directory (for gum choose)
-build_dir_label() {
-  local dirname="$1"
-  local count
-  count="$(count_spec_files "$dirname")"
-  local kind
-  kind="$(classify_dir "$dirname")"
-
-  local detail=""
-  case "$kind" in
-    flat)           detail="${count} file(s)" ;;
-    nested-skills)  detail="${count} skill(s)" ;;
-    nested-rules)
-      local groups=()
-      for subdir in "$REPO_ROOT/$dirname"/*/; do
-        [[ -d "$subdir" ]] && groups+=("$(basename "$subdir")")
-      done
-      detail="sets: $(IFS=', '; echo "${groups[*]}")"
-      ;;
-  esac
-
-  printf "%-14s  %s" "$dirname/" "$detail"
-}
-
-# ---- Install functions ---------------------------------------------------
-
-# Install flat spec directory: symlink each file
-install_flat() {
-  local spec_dir="$1"
-  local source_dir="$REPO_ROOT/$spec_dir"
-  local target_dir="$PROJECT_ROOT/.claude/$spec_dir"
-  local installed=0 skipped=0 updated=0 up_to_date=0
-
-  $DRY_RUN || mkdir -p "$target_dir"
-
-  for ext in "${SPEC_EXTENSIONS[@]}"; do
-    for file in "$source_dir"/*."$ext"; do
-      [[ -f "$file" ]] || continue
-      local filename
-      filename="$(basename "$file")"
-      local target="$target_dir/$filename"
-      local rel
-      rel="$(relpath "$file" "$target_dir")"
-
-      if [[ -L "$target" ]]; then
-        local current_link
-        current_link="$(cd "$(dirname "$target")" && readlink "$(basename "$target")" 2>/dev/null || true)"
-        if [[ "$current_link" == "$rel" ]]; then
-          up_to_date=$((up_to_date + 1))
-        elif $DRY_RUN; then
-          info "Would update: .claude/$spec_dir/$filename"
-          updated=$((updated + 1))
-        elif $FORCE || gum confirm "Overwrite .claude/$spec_dir/$filename?"; then
-          ln -sf "$rel" "$target"
-          updated=$((updated + 1))
-        else
-          skipped=$((skipped + 1))
-        fi
-      elif [[ -f "$target" ]]; then
-        if $DRY_RUN; then
-          warn "Would overwrite: .claude/$spec_dir/$filename"
-          updated=$((updated + 1))
-        elif $FORCE || gum confirm "Overwrite existing .claude/$spec_dir/$filename?"; then
-          if $USE_COPY; then
-            cp "$file" "$target"
-          else
-            rm "$target"
-            ln -s "$rel" "$target"
-          fi
-          updated=$((updated + 1))
-        else
-          skipped=$((skipped + 1))
-        fi
-      else
-        if $DRY_RUN; then
-          ok "Would install: .claude/$spec_dir/$filename"
-        elif $USE_COPY; then
-          cp "$file" "$target"
-        else
-          ln -s "$rel" "$target"
-        fi
-        installed=$((installed + 1))
-      fi
-    done
-  done
-
-  print_stats "$spec_dir" "$installed" "$updated" "$up_to_date" "$skipped"
-}
-
-# Install nested-skills: symlink entire subdirectories
-install_nested_skills() {
-  local spec_dir="$1"
-  local source_dir="$REPO_ROOT/$spec_dir"
-  local target_dir="$PROJECT_ROOT/.claude/$spec_dir"
-  local installed=0 skipped=0 updated=0 up_to_date=0
-
-  $DRY_RUN || mkdir -p "$target_dir"
-
-  for subdir in "$source_dir"/*/; do
-    [[ -d "$subdir" ]] || continue
-    local subdirname
-    subdirname="$(basename "$subdir")"
-
-    local has_specs=false
-    for ext in "${SPEC_EXTENSIONS[@]}"; do
-      if compgen -G "$subdir*.$ext" > /dev/null 2>&1; then
-        has_specs=true; break
-      fi
-    done
-    $has_specs || continue
-
-    local target="$target_dir/$subdirname"
-    local rel
-    rel="$(relpath "$subdir" "$target_dir")"
-    rel="${rel%/}"
-
-    if [[ -L "$target" ]]; then
-      local current_link
-      current_link="$(cd "$(dirname "$target")" && readlink "$(basename "$target")" 2>/dev/null || true)"
-      if [[ "$current_link" == "$rel" ]]; then
-        up_to_date=$((up_to_date + 1))
-      elif $DRY_RUN; then
-        info "Would update: .claude/$spec_dir/$subdirname"
-        updated=$((updated + 1))
-      elif $FORCE || gum confirm "Overwrite .claude/$spec_dir/$subdirname/?"; then
-        ln -sfn "$rel" "$target"
-        updated=$((updated + 1))
-      else
-        skipped=$((skipped + 1))
-      fi
-    elif [[ -d "$target" ]]; then
-      if $DRY_RUN; then
-        warn "Would replace dir: .claude/$spec_dir/$subdirname"
-        updated=$((updated + 1))
-      elif $FORCE || gum confirm "Replace directory .claude/$spec_dir/$subdirname/?"; then
-        if $USE_COPY; then
-          rm -rf "$target"
-          cp -R "$subdir" "$target"
-        else
-          rm -rf "$target"
-          ln -s "$rel" "$target"
-        fi
-        updated=$((updated + 1))
-      else
-        skipped=$((skipped + 1))
-      fi
-    else
-      if $DRY_RUN; then
-        ok "Would install: .claude/$spec_dir/$subdirname/"
-      elif $USE_COPY; then
-        cp -R "$subdir" "$target"
-      else
-        ln -s "$rel" "$target"
-      fi
-      installed=$((installed + 1))
-    fi
-  done
-
-  print_stats "$spec_dir" "$installed" "$updated" "$up_to_date" "$skipped"
-}
-
-# Install nested-rules: preserve subdirectory structure, symlink files within
-# Accepts optional list of selected rule sets; if empty, installs all.
-install_nested_rules() {
-  local spec_dir="$1"
-  shift
-  local selected_sets=("$@")
-  local source_dir="$REPO_ROOT/$spec_dir"
-  local target_dir="$PROJECT_ROOT/.claude/$spec_dir"
-  local installed=0 skipped=0 updated=0 up_to_date=0
-
-  for subdir in "$source_dir"/*/; do
-    [[ -d "$subdir" ]] || continue
-    local setname
-    setname="$(basename "$subdir")"
-
-    # Filter by selected sets if provided
-    if (( ${#selected_sets[@]} > 0 )); then
-      local match=false
-      for s in "${selected_sets[@]}"; do
-        [[ "$s" == "$setname" ]] && { match=true; break; }
-      done
-      $match || continue
-    fi
-
-    local sub_target="$target_dir/$setname"
-    $DRY_RUN || mkdir -p "$sub_target"
-
-    for ext in "${SPEC_EXTENSIONS[@]}"; do
-      for file in "$subdir"*."$ext"; do
-        [[ -f "$file" ]] || continue
-        local filename
-        filename="$(basename "$file")"
-        local target="$sub_target/$filename"
-        local rel
-        rel="$(relpath "$file" "$sub_target")"
-
-        if [[ -L "$target" ]]; then
-          local current_link
-          current_link="$(cd "$(dirname "$target")" && readlink "$(basename "$target")" 2>/dev/null || true)"
-          if [[ "$current_link" == "$rel" ]]; then
-            up_to_date=$((up_to_date + 1))
-          elif $DRY_RUN; then
-            info "Would update: .claude/$spec_dir/$setname/$filename"
-            updated=$((updated + 1))
-          elif $FORCE || gum confirm "Overwrite .claude/$spec_dir/$setname/$filename?"; then
-            ln -sf "$rel" "$target"
-            updated=$((updated + 1))
-          else
-            skipped=$((skipped + 1))
-          fi
-        elif [[ -f "$target" ]]; then
-          if $DRY_RUN; then
-            warn "Would overwrite: .claude/$spec_dir/$setname/$filename"
-            updated=$((updated + 1))
-          elif $FORCE || gum confirm "Overwrite .claude/$spec_dir/$setname/$filename?"; then
-            if $USE_COPY; then
-              cp "$file" "$target"
-            else
-              rm "$target"
-              ln -s "$rel" "$target"
-            fi
-            updated=$((updated + 1))
-          else
-            skipped=$((skipped + 1))
-          fi
-        else
-          if $DRY_RUN; then
-            ok "Would install: .claude/$spec_dir/$setname/$filename"
-          elif $USE_COPY; then
-            cp "$file" "$target"
-          else
-            ln -s "$rel" "$target"
-          fi
-          installed=$((installed + 1))
-        fi
-      done
-    done
-  done
-
-  print_stats "$spec_dir" "$installed" "$updated" "$up_to_date" "$skipped"
-}
-
-# ---- Uninstall functions -------------------------------------------------
-
-uninstall_flat() {
-  local spec_dir="$1"
-  local target_dir="$PROJECT_ROOT/.claude/$spec_dir"
-  local removed=0
-
-  [[ -d "$target_dir" ]] || return 0
-
-  for ext in "${SPEC_EXTENSIONS[@]}"; do
-    for target in "$target_dir"/*."$ext"; do
-      [[ -L "$target" ]] || continue
-      local link_dest
-      link_dest="$(cd "$(dirname "$target")" && readlink "$(basename "$target")")"
-      local resolved
-      resolved="$(cd "$(dirname "$target")" && cd "$(dirname "$link_dest")" 2>/dev/null && pwd)/$(basename "$link_dest")"
-
-      if [[ "$resolved" == "$REPO_ROOT"/* ]]; then
-        if $DRY_RUN; then
-          info "Would remove: .claude/$spec_dir/$(basename "$target")"
-        else
-          rm "$target"
-        fi
-        removed=$((removed + 1))
-      fi
-    done
-  done
-
-  if ! $DRY_RUN && [[ -d "$target_dir" ]]; then
-    rmdir "$target_dir" 2>/dev/null || true
-  fi
-
-  if (( removed > 0 )); then
-    ok "Removed $removed file(s) from $spec_dir/"
-  else
-    info "Nothing to remove in $spec_dir/"
-  fi
-}
-
-uninstall_nested_skills() {
-  local spec_dir="$1"
-  local target_dir="$PROJECT_ROOT/.claude/$spec_dir"
-  local removed=0
-
-  [[ -d "$target_dir" ]] || return 0
-
-  for target in "$target_dir"/*/; do
-    [[ -L "${target%/}" ]] || continue
-    local link_dest
-    link_dest="$(cd "$(dirname "${target%/}")" && readlink "$(basename "${target%/}")")"
-    local resolved
-    resolved="$(cd "$(dirname "${target%/}")" && cd "$link_dest" 2>/dev/null && pwd)"
-
-    if [[ "$resolved" == "$REPO_ROOT"/* ]]; then
-      if $DRY_RUN; then
-        info "Would remove: .claude/$spec_dir/$(basename "$target")"
-      else
-        rm "${target%/}"
-      fi
-      removed=$((removed + 1))
-    fi
-  done
-
-  if ! $DRY_RUN && [[ -d "$target_dir" ]]; then
-    rmdir "$target_dir" 2>/dev/null || true
-  fi
-
-  if (( removed > 0 )); then
-    ok "Removed $removed skill(s) from $spec_dir/"
-  else
-    info "Nothing to remove in $spec_dir/"
-  fi
-}
-
-uninstall_nested_rules() {
-  local spec_dir="$1"
-  local target_dir="$PROJECT_ROOT/.claude/$spec_dir"
-  local removed=0
-
-  [[ -d "$target_dir" ]] || return 0
-
-  for sub_target in "$target_dir"/*/; do
-    [[ -d "$sub_target" ]] || continue
-    for ext in "${SPEC_EXTENSIONS[@]}"; do
-      for target in "$sub_target"*."$ext"; do
-        [[ -L "$target" ]] || continue
-        local link_dest
-        link_dest="$(cd "$(dirname "$target")" && readlink "$(basename "$target")")"
-        local resolved
-        resolved="$(cd "$(dirname "$target")" && cd "$(dirname "$link_dest")" 2>/dev/null && pwd)/$(basename "$link_dest")"
-
-        if [[ "$resolved" == "$REPO_ROOT"/* ]]; then
-          if $DRY_RUN; then
-            info "Would remove: .claude/$spec_dir/$(basename "$sub_target")/$(basename "$target")"
-          else
-            rm "$target"
-          fi
-          removed=$((removed + 1))
-        fi
-      done
-    done
-    if ! $DRY_RUN; then
-      rmdir "$sub_target" 2>/dev/null || true
-    fi
-  done
-
-  if ! $DRY_RUN && [[ -d "$target_dir" ]]; then
-    rmdir "$target_dir" 2>/dev/null || true
-  fi
-
-  if (( removed > 0 )); then
-    ok "Removed $removed rule(s) from $spec_dir/"
-  else
-    info "Nothing to remove in $spec_dir/"
-  fi
-}
-
-# ---- Stats printer -------------------------------------------------------
-print_stats() {
-  local dir="$1" installed="$2" updated="$3" up_to_date="$4" skipped="$5"
-  if $DRY_RUN; then return; fi
-  local parts=()
-  (( installed > 0 ))  && parts+=("${installed} installed")
-  (( updated > 0 ))    && parts+=("${updated} updated")
-  (( up_to_date > 0 )) && parts+=("${up_to_date} up-to-date")
-  (( skipped > 0 ))    && parts+=("${skipped} skipped")
-  if (( ${#parts[@]} > 0 )); then
-    ok "$dir/: $(IFS=', '; echo "${parts[*]}")"
-  fi
-}
-
-# ---- Argument parsing ----------------------------------------------------
-usage() {
-  gum style --border normal --padding "1 2" --border-foreground 99 \
-    "AAN Installer v${VERSION} — Claude Code" \
-    "" \
-    "Usage: bash install.sh [OPTIONS]" \
-    "" \
-    "Options:" \
-    "  --project-root PATH   Project root (auto-detected by default)" \
-    "  --force               Overwrite without confirmation" \
-    "  --copy                Copy files instead of symlinks" \
-    "  --uninstall           Remove installed symlinks" \
-    "  --dry-run             Preview changes only" \
-    "  -h, --help            Show this help"
-}
-
-# ---- Main ----------------------------------------------------------------
-main() {
-  local show_help=false
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --project-root) PROJECT_ROOT="$2"; shift 2 ;;
-      --force)        FORCE=true;        shift ;;
-      --copy)         USE_COPY=true;     shift ;;
-      --uninstall)    UNINSTALL=true;    shift ;;
-      --dry-run)      DRY_RUN=true;      shift ;;
-      -h|--help)      show_help=true;    shift ;;
-      *) err "Unknown option: $1"; usage; exit 1 ;;
-    esac
-  done
-
-  if $show_help; then
-    usage
-    exit 0
-  fi
-
-  resolve_paths
-
-  echo ""
-  header
-  echo ""
-  info "AAN repo:     $REPO_ROOT"
-  info "Project root: $PROJECT_ROOT"
-  info "Target:       $PROJECT_ROOT/.claude/"
-  $DRY_RUN  && warn "Mode: dry-run (no changes will be made)"
-  $USE_COPY && warn "Mode: copy (files will be copied, not symlinked)"
-  $UNINSTALL && warn "Mode: uninstall"
-
-  # Deny Claude agent access to the AAN submodule directory
-  ensure_deny_permissions
-
-  # Discover spec directories
-  local spec_dirs_str
-  spec_dirs_str="$(discover_spec_dirs)"
-  local spec_dirs
-  read -ra spec_dirs <<< "$spec_dirs_str"
-
-  if [[ ${#spec_dirs[@]} -eq 0 ]]; then
-    warn "No spec directories found in $REPO_ROOT"
-    exit 0
-  fi
-
-  # ---- Uninstall mode ----------------------------------------------------
-  if $UNINSTALL; then
-    echo ""
-    label "Removing installed specs..."
-    echo ""
-    for dir in "${spec_dirs[@]}"; do
-      local kind
-      kind="$(classify_dir "$dir")"
-      case "$kind" in
-        flat)           uninstall_flat "$dir" ;;
-        nested-skills)  uninstall_nested_skills "$dir" ;;
-        nested-rules)   uninstall_nested_rules "$dir" ;;
+registry_get() {
+  local type_id="$1" field="$2"
+  local entry id src kind path handler
+  for entry in "${RESOURCE_REGISTRY[@]}"; do
+    IFS='|' read -r id src kind path handler <<< "$entry"
+    if [[ "$id" == "$type_id" ]]; then
+      case "$field" in
+        source)  echo "$src" ;;
+        kind)    echo "$kind" ;;
+        target)  echo "$path" ;;
+        handler) echo "$handler" ;;
+        *) return 1 ;;
       esac
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ===== 日志函数 =====
+log_info()    { printf '\033[36m[AAN]\033[0m %s\n' "$*" >&2; }
+log_warn()    { printf '\033[33m[AAN WARN]\033[0m %s\n' "$*" >&2; }
+log_error()   { printf '\033[31m[AAN ERROR]\033[0m %s\n' "$*" >&2; }
+log_success() { printf '\033[32m[AAN OK]\033[0m %s\n' "$*" >&2; }
+
+die() {
+  log_error "$@"
+  exit 1
+}
+
+# ===== Stage 0: preflight =====
+preflight() {
+  local missing=()
+
+  command -v jq  >/dev/null 2>&1 || missing+=("jq")
+  command -v gum >/dev/null 2>&1 || missing+=("gum")
+
+  if ((${#missing[@]} > 0)); then
+    log_error "缺少必需工具：${missing[*]}"
+    cat >&2 <<'HINT'
+
+安装提示：
+  macOS:   brew install jq gum
+  Linux:   jq  → https://jqlang.github.io/jq/download/
+           gum → https://github.com/charmbracelet/gum#installation
+
+安装后请重新运行本脚本。
+HINT
+    exit 1
+  fi
+
+  log_success "前置工具就绪：jq / gum"
+}
+
+# ===== Stage 1: detect_context =====
+detect_context() {
+  # 项目根：优先 git superproject（submodule 场景），回退 pwd
+  local project_root=""
+  if command -v git >/dev/null 2>&1; then
+    project_root="$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+  fi
+  [[ -z "${project_root}" ]] && project_root="$(pwd)"
+
+  readonly PROJECT_ROOT="${project_root}"
+  readonly CLAUDE_DIR="${PROJECT_ROOT}/.claude"
+  readonly MCP_FILE="${PROJECT_ROOT}/.mcp.json"
+
+  # AAN 源数据文件
+  readonly MANIFESTS_JSON="${AAN_ROOT}/install/manifests.json"
+  readonly HOOKS_JSON="${AAN_ROOT}/hooks/hooks.json"
+  readonly MCP_SERVERS_JSON="${AAN_ROOT}/mcp/mcp-servers.json"
+
+  # 校验源文件存在
+  [[ -f "${MANIFESTS_JSON}" ]]   || die "未找到 manifests.json: ${MANIFESTS_JSON}"
+  [[ -f "${HOOKS_JSON}" ]]       || die "未找到 hooks.json: ${HOOKS_JSON}"
+  [[ -f "${MCP_SERVERS_JSON}" ]] || die "未找到 mcp-servers.json: ${MCP_SERVERS_JSON}"
+
+  log_info "AAN 源路径:  ${AAN_ROOT}"
+  log_info "项目根路径:  ${PROJECT_ROOT}"
+  log_info "安装目标:    ${CLAUDE_DIR}"
+}
+
+# ===== Stage 2: load_manifests =====
+load_manifests() {
+  local schema
+  schema="$(jq -r '."$schema_version" // "missing"' "${MANIFESTS_JSON}")"
+
+  if [[ "${schema}" != "${SCHEMA_VERSION_SUPPORTED}" ]]; then
+    die "manifests.json schema 版本 \"${schema}\" 不受支持（当前仅支持 \"${SCHEMA_VERSION_SUPPORTED}\"）"
+  fi
+
+  local module_count
+  module_count="$(jq -r '.modules | length' "${MANIFESTS_JSON}")"
+
+  log_info "manifests schema: v${schema}"
+  log_info "识别到 ${module_count} 个模块"
+}
+
+# ===== Stage 3: init_registry =====
+init_registry() {
+  log_info "资源注册表（${#RESOURCE_REGISTRY[@]} 项）："
+  local type_id
+  while IFS= read -r type_id; do
+    log_info "  - ${type_id} → $(registry_get "${type_id}" target)"
+  done < <(registry_types)
+}
+
+# ===== Stage 4: select_modules =====
+# 输出：把最终选中的模块 ID（含 required + 用户选择）放入全局 SELECTED_MODULES 数组
+select_modules() {
+  # required 模块（自动加入，不在 UI 展示）
+  local required_list
+  required_list="$(jq -r '.modules | to_entries[] | select(.value.required == true) | .key' "${MANIFESTS_JSON}")"
+
+  # 打印可选模块（带描述）
+  log_info "可选模块："
+  jq -r '.modules | to_entries[]
+    | select(.value.required != true)
+    | "  • \(.key): \(.value.description)"' "${MANIFESTS_JSON}" >&2
+  echo >&2
+
+  log_info "请选择要安装的模块（空格勾选，回车确认；required 模块已自动包含）"
+  local optional_names
+  optional_names="$(jq -r '.modules | to_entries[]
+    | select(.value.required != true)
+    | .key' "${MANIFESTS_JSON}")"
+
+  local chosen=""
+  if [[ -n "${optional_names}" ]]; then
+    chosen="$(echo "${optional_names}" | gum choose --no-limit || true)"
+  fi
+
+  # 合并 required + chosen，去重（保持 required 在前）
+  local merged
+  merged="$(printf '%s\n%s\n' "${required_list}" "${chosen}" | awk 'NF && !seen[$0]++')"
+
+  SELECTED_MODULES=()
+  while IFS= read -r m; do
+    m="${m%$'\r'}"     # 防御 CRLF
+    [[ -n "$m" ]] && SELECTED_MODULES+=("$m")
+  done <<< "${merged}"
+
+  if ((${#SELECTED_MODULES[@]} == 0)); then
+    die "未选择任何模块，退出"
+  fi
+
+  log_info "初选模块（${#SELECTED_MODULES[@]} 个）：${SELECTED_MODULES[*]}"
+}
+
+# ===== Stage 5: resolve_deps =====
+# 输入：SELECTED_MODULES
+# 输出：RESOLVED_MODULES（含依赖闭包、已去重）
+resolve_deps() {
+  local seeds_json
+  seeds_json="$(printf '%s\n' "${SELECTED_MODULES[@]}" | jq -R . | jq -s .)"
+
+  local closure
+  closure="$(jq -r --argjson seeds "${seeds_json}" '
+    . as $manifest |
+    def deps($m): $manifest.modules[$m].depends_on // [];
+    def walk($m; $seen; $stack):
+      if ($stack | index($m)) then
+        error("循环依赖：" + ($stack + [$m] | join(" → ")))
+      elif ($seen | index($m)) then $seen
+      else
+        (reduce deps($m)[] as $d
+          ($seen; walk($d; .; $stack + [$m]))) + [$m]
+      end;
+    reduce $seeds[] as $x ([]; walk($x; .; [])) | unique | .[]
+  ' "${MANIFESTS_JSON}")" || die "依赖解析失败（见上方错误）"
+
+  RESOLVED_MODULES=()
+  while IFS= read -r m; do
+    [[ -n "$m" ]] && RESOLVED_MODULES+=("$m")
+  done <<< "${closure}"
+
+  local added=()
+  local m
+  for m in "${RESOLVED_MODULES[@]}"; do
+    local found=0
+    local s
+    for s in "${SELECTED_MODULES[@]}"; do
+      [[ "$s" == "$m" ]] && { found=1; break; }
     done
-    echo ""
-    if $DRY_RUN; then
-      info "Dry-run complete. No changes were made."
-    else
-      ok "Uninstall complete."
-    fi
-    return
+    ((found == 0)) && added+=("$m")
+  done
+
+  if ((${#added[@]} > 0)); then
+    log_info "依赖闭包自动加入：${added[*]}"
   fi
 
-  # ---- Install mode: select categories -----------------------------------
-  echo ""
-  local options=()
-  for dir in "${spec_dirs[@]}"; do
-    options+=("$(build_dir_label "$dir")")
+  log_info "最终模块集合（${#RESOLVED_MODULES[@]} 个）：${RESOLVED_MODULES[*]}"
+}
+
+# ===== Stage 6: confirm_plan =====
+confirm_plan() {
+  log_info "资源概览："
+  local mods_json
+  mods_json="$(printf '%s\n' "${RESOLVED_MODULES[@]}" | jq -R . | jq -s .)"
+
+  local type_id
+  while IFS= read -r type_id; do
+    local count
+    count="$(jq -r --arg t "${type_id}" --argjson mods "${mods_json}" '
+      [ $mods[] as $m | .modules[$m][$t][]? ] | unique | length
+    ' "${MANIFESTS_JSON}")"
+    log_info "  - ${type_id}: ${count}"
+  done < <(registry_types)
+
+  log_info "目标目录: ${CLAUDE_DIR}"
+  log_info "MCP 文件: ${MCP_FILE}"
+
+  if ! gum confirm "确认安装以上资源到目标项目？"; then
+    log_warn "用户取消，退出"
+    exit 0
+  fi
+}
+
+# ===== Handlers：文件型资源落盘 =====
+
+# 整目录覆盖（skills）
+handle_copy_tree() {
+  local source_root="$1" target_root="$2" name="$3"
+  local src="${source_root}/${name}"
+  local dst="${target_root}/${name}"
+
+  [[ -d "${src}" ]] || die "源目录不存在：${src}"
+
+  mkdir -p "${target_root}"
+  rm -rf "${dst}"
+  cp -R "${src}" "${dst}"
+}
+
+# 单文件覆盖（agents / commands / output-styles）
+handle_copy_file() {
+  local source_root="$1" target_root="$2" name="$3"
+  local src="${source_root}/${name}"
+  local dst="${target_root}/${name}"
+
+  [[ -f "${src}" ]] || die "源文件不存在：${src}"
+
+  mkdir -p "${target_root}"
+  cp "${src}" "${dst}"
+}
+
+# 保留相对子目录结构（rules/common/testing.md → .claude/rules/common/testing.md）
+handle_copy_file_preserve_path() {
+  local source_root="$1" target_root="$2" relpath="$3"
+  local src="${source_root}/${relpath}"
+  local dst="${target_root}/${relpath}"
+
+  [[ -f "${src}" ]] || die "源文件不存在：${src}"
+
+  mkdir -p "$(dirname "${dst}")"
+  cp "${src}" "${dst}"
+}
+
+# ===== Stage 7a: apply_file_resources =====
+apply_file_resources() {
+  log_info "开始落盘文件型资源..."
+
+  local module type_id kind source target handler items item count=0
+
+  for module in "${RESOLVED_MODULES[@]}"; do
+    while IFS= read -r type_id; do
+      kind="$(registry_get "${type_id}" kind)"
+      [[ "${kind}" == "json_field" ]] && continue
+
+      source="${AAN_ROOT}/$(registry_get "${type_id}" source)"
+      target="${PROJECT_ROOT}/$(registry_get "${type_id}" target)"
+      handler="$(registry_get "${type_id}" handler)"
+
+      items="$(jq -r --arg m "${module}" --arg t "${type_id}" \
+        '.modules[$m][$t] // [] | .[]' "${MANIFESTS_JSON}")"
+
+      while IFS= read -r item; do
+        [[ -z "${item}" ]] && continue
+        "${handler}" "${source}" "${target}" "${item}"
+        count=$((count + 1))
+      done <<< "${items}"
+    done < <(registry_types)
   done
 
-  local selected
-  selected=$(printf '%s\n' "${options[@]}" | gum choose --no-limit \
-    --header="Select categories to install  (SPACE toggle, ENTER confirm)" \
-    --cursor.foreground="6" \
-    --selected.foreground="2" \
-    --header.foreground="99") || { warn "No selection made."; exit 0; }
+  log_success "已落盘 ${count} 个文件型资源条目"
+}
 
-  local selected_dirs=()
-  while IFS= read -r line; do
-    local name="${line%% *}"
-    name="${name%/}"
-    selected_dirs+=("$name")
-  done <<< "$selected"
+# ===== Stage 7b: apply_hooks =====
+# 合并 hooks 到 .claude/settings.json
+# 规则："AAN 拥有 hooks.json 中出现的所有 id"
+#   - 每次运行：先从 settings.json 剔除所有 AAN 拥有的 id，再注入本次选中的
+#   - 用户自己加的 hook id 不动
+apply_hooks() {
+  log_info "开始合并 hooks 到 settings.json..."
 
-  # ---- For rules: select which rule sets ---------------------------------
-  local selected_rule_sets=()
-  for dir in "${selected_dirs[@]}"; do
-    if [[ "$(classify_dir "$dir")" == "nested-rules" ]]; then
-      local rule_groups=()
-      for subdir in "$REPO_ROOT/$dir"/*/; do
-        [[ -d "$subdir" ]] || continue
-        local setname
-        setname="$(basename "$subdir")"
-        local fcount=0
-        for ext in "${SPEC_EXTENSIONS[@]}"; do
-          for f in "$subdir"*."$ext"; do
-            [[ -f "$f" ]] && fcount=$((fcount + 1))
-          done
-        done
-        rule_groups+=("$(printf "%-14s  %s file(s)" "$setname" "$fcount")")
-      done
-
-      if (( ${#rule_groups[@]} > 1 )); then
-        echo ""
-        local rule_sel
-        rule_sel=$(printf '%s\n' "${rule_groups[@]}" | gum choose --no-limit \
-          --header="Select rule sets to install  (SPACE toggle, ENTER confirm)" \
-          --cursor.foreground="6" \
-          --selected.foreground="2" \
-          --header.foreground="99") || true
-        if [[ -n "$rule_sel" ]]; then
-          while IFS= read -r line; do
-            selected_rule_sets+=("${line%% *}")
-          done <<< "$rule_sel"
-        fi
-      fi
-    fi
-  done
-
-  # ---- Install selected categories ---------------------------------------
-  echo ""
-  label "Installing into .claude/..."
-  echo ""
-
-  for dir in "${selected_dirs[@]}"; do
-    local kind
-    kind="$(classify_dir "$dir")"
-    case "$kind" in
-      flat)           install_flat "$dir" ;;
-      nested-skills)  install_nested_skills "$dir" ;;
-      nested-rules)   install_nested_rules "$dir" "${selected_rule_sets[@]}" ;;
-    esac
-  done
-
-  # ---- Summary -----------------------------------------------------------
-  echo ""
-  if $DRY_RUN; then
-    info "Dry-run complete. No changes were made."
+  # 1. 拷贝 scripts 目录（hooks 的 node bootstrap 依赖 scripts/lib/utils.js）
+  local scripts_src="${AAN_ROOT}/scripts"
+  local scripts_dst="${CLAUDE_DIR}/scripts"
+  if [[ -d "${scripts_src}" ]]; then
+    mkdir -p "${CLAUDE_DIR}"
+    rm -rf "${scripts_dst}"
+    cp -R "${scripts_src}" "${scripts_dst}"
+    log_info "已拷贝 scripts 目录 → .claude/scripts/"
   else
-    ok "Install complete."
-    echo ""
-    info "To update after pulling changes, re-run:"
-    info "  bash $(relpath "${SCRIPT_DIR}" "$PROJECT_ROOT")/install.sh"
+    log_warn "AAN 源无 scripts 目录，hooks bootstrap 可能无法工作"
   fi
-  echo ""
+
+  # 2. 收集本次选中的 hook id（所选模块 hooks 数组的并集）
+  local mods_json wanted_ids_json all_aan_ids_json
+  mods_json="$(printf '%s\n' "${RESOLVED_MODULES[@]}" | jq -R . | jq -s .)"
+
+  wanted_ids_json="$(jq -c --argjson mods "${mods_json}" '
+    [ $mods[] as $m | .modules[$m].hooks[]? ] | unique
+  ' "${MANIFESTS_JSON}")"
+
+  # 3. 收集 AAN 拥有的所有 hook id（在 hooks.json 中出现的）
+  all_aan_ids_json="$(jq -c '
+    [ .hooks | to_entries[] | .value[] | .id ] | unique
+  ' "${HOOKS_JSON}")"
+
+  local wanted_count all_count
+  wanted_count="$(echo "${wanted_ids_json}" | jq -r 'length')"
+  all_count="$(echo "${all_aan_ids_json}" | jq -r 'length')"
+  log_info "AAN 全部 hook id: ${all_count} 个；本次选中: ${wanted_count} 个"
+
+  # 4. 准备 settings.json（首次创建或备份现有）
+  local settings="${CLAUDE_DIR}/settings.json"
+  mkdir -p "${CLAUDE_DIR}"
+  if [[ ! -f "${settings}" ]]; then
+    echo '{}' > "${settings}"
+    log_info "创建新 settings.json"
+  else
+    local ts backup
+    ts="$(date +%Y%m%d-%H%M%S)"
+    backup="${settings}.aan-backup-${ts}"
+    cp "${settings}" "${backup}"
+    log_info "已备份原 settings.json → ${backup##*/}"
+  fi
+
+  # 5. jq 合并
+  local tmp
+  tmp="$(mktemp)"
+  jq --slurpfile hooks_src "${HOOKS_JSON}" \
+     --argjson want "${wanted_ids_json}" \
+     --argjson own  "${all_aan_ids_json}" '
+    (.hooks // {}) as $cur_hooks
+    | ($hooks_src[0].hooks // {}) as $src_hooks
+    # a) 从当前 settings.hooks 剔除所有 AAN 拥有的 id（清理旧 AAN 注入）
+    | .hooks = (
+        $cur_hooks
+        | to_entries
+        | map(.value |= map(select(.id as $i | $own | index($i) | not)))
+        | from_entries
+      )
+    # b) 按事件注入本次选中的 hooks
+    | reduce ($src_hooks | to_entries[]) as $evt (
+        .;
+        .hooks[$evt.key] = (
+          (.hooks[$evt.key] // [])
+          + ($evt.value | map(select(.id as $i | $want | index($i) != null)))
+        )
+      )
+    # c) 清理空事件
+    | .hooks |= (to_entries | map(select(.value | length > 0)) | from_entries)
+    # d) 注入 CLAUDE_PLUGIN_ROOT 环境变量
+    | .env = (.env // {}) + {"CLAUDE_PLUGIN_ROOT": "${CLAUDE_PROJECT_DIR}/.claude"}
+  ' "${settings}" > "${tmp}" && mv "${tmp}" "${settings}"
+
+  log_success "hooks 合并完成（注入 ${wanted_count} 个 hook id）"
+}
+
+# ===== Stage 7c: configure_mcp_optional =====
+# 两级交互：是否装 MCP → 选哪些
+# 占位符保留原样；末尾列出需手填的清单
+configure_mcp_optional() {
+  log_info "=== MCP 安装 ==="
+
+  if ! gum confirm "是否安装 MCP？"; then
+    log_info "已跳过 MCP 安装"
+    return 0
+  fi
+
+  # 1. 从 mcp-servers.json 读所有可选 MCP
+  log_info "MCP 选项："
+  jq -r '.mcpServers | to_entries[]
+    | "  • \(.key): \(.value.description // "(无描述)")"' "${MCP_SERVERS_JSON}" >&2
+  echo >&2
+
+  log_info "请选择要安装的 MCP（空格勾选，回车确认；直接回车=全不选）"
+  local all_names
+  all_names="$(jq -r '.mcpServers | keys[]' "${MCP_SERVERS_JSON}")"
+  local chosen
+  chosen="$(echo "${all_names}" | gum choose --no-limit || true)"
+
+  if [[ -z "${chosen}" ]]; then
+    log_info "未选择任何 MCP，跳过"
+    return 0
+  fi
+
+  local chosen_names=()
+  while IFS= read -r name; do
+    name="${name%$'\r'}"     # 防御 CRLF：剥离尾部 \r
+    [[ -n "${name}" ]] && chosen_names+=("${name}")
+  done <<< "${chosen}"
+
+  log_info "选中 ${#chosen_names[@]} 个 MCP：${chosen_names[*]}"
+
+  # 2. 抽出选中 MCP 的原始配置（保留占位符原样）
+  local chosen_names_json filled_mcps_json
+  chosen_names_json="$(printf '%s\n' "${chosen_names[@]}" | jq -R . | jq -s .)"
+  filled_mcps_json="$(jq -c --argjson names "${chosen_names_json}" '
+    .mcpServers | with_entries(select(.key as $k | $names | index($k)))
+  ' "${MCP_SERVERS_JSON}")"
+
+  # 3. 合并到 <project>/.mcp.json
+  local all_aan_names_json
+  all_aan_names_json="$(jq -c '.mcpServers | keys' "${MCP_SERVERS_JSON}")"
+
+  if [[ ! -f "${MCP_FILE}" ]]; then
+    echo '{"mcpServers": {}}' > "${MCP_FILE}"
+    log_info "创建新 .mcp.json"
+  else
+    local ts backup
+    ts="$(date +%Y%m%d-%H%M%S)"
+    backup="${MCP_FILE}.aan-backup-${ts}"
+    cp "${MCP_FILE}" "${backup}"
+    log_info "已备份原 .mcp.json → ${backup##*/}"
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  jq --argjson filled "${filled_mcps_json}" \
+     --argjson own "${all_aan_names_json}" '
+    .mcpServers = (.mcpServers // {})
+    | .mcpServers |= with_entries(select(.key as $k | $own | index($k) | not))
+    | .mcpServers += $filled
+  ' "${MCP_FILE}" > "${tmp}" && mv "${tmp}" "${MCP_FILE}"
+
+  log_success "MCP 合并完成（写入 ${#chosen_names[@]} 个）"
+
+  # 4. 末尾占位符清单
+  local placeholders_list
+  placeholders_list="$(jq -r --argjson names "${chosen_names_json}" '
+    .mcpServers
+    | to_entries[]
+    | select(.key as $k | $names | index($k))
+    | .key as $name
+    | [.value | tostring | scan("YOUR_[A-Z0-9_]+_HERE|<[A-Z_]+_PLACEHOLDER>|__FILL_ME__")] as $phs
+    | select($phs | length > 0)
+    | "  - \($name): \($phs | unique | join(", "))"
+  ' "${MCP_SERVERS_JSON}")"
+
+  if [[ -n "${placeholders_list}" ]]; then
+    log_warn "以下 MCP 包含占位符，请手动编辑 ${MCP_FILE} 填入真实值后 MCP 方可用："
+    echo "${placeholders_list}" >&2
+  fi
+}
+
+# ===== Stage 8: summary =====
+summary() {
+  echo "" >&2
+  log_info "========================================"
+  log_info "  AAN 安装完成"
+  log_info "========================================"
+  log_info "  模块（${#RESOLVED_MODULES[@]} 个）：${RESOLVED_MODULES[*]}"
+  log_info ""
+
+  local mods_json
+  mods_json="$(printf '%s\n' "${RESOLVED_MODULES[@]}" | jq -R . | jq -s .)"
+
+  log_info "  资源落盘数："
+  local type_id count
+  while IFS= read -r type_id; do
+    count="$(jq -r --arg t "${type_id}" --argjson mods "${mods_json}" '
+      [ $mods[] as $m | .modules[$m][$t][]? ] | unique | length
+    ' "${MANIFESTS_JSON}")"
+    log_info "    - ${type_id}: ${count}"
+  done < <(registry_types)
+
+  log_info ""
+  log_info "  产物位置："
+  log_info "    ${CLAUDE_DIR}/                    (所选文件型资源)"
+  log_info "    ${CLAUDE_DIR}/settings.json       (hooks + CLAUDE_PLUGIN_ROOT)"
+  log_info "    ${CLAUDE_DIR}/scripts/            (hooks 依赖的 node 脚本)"
+  [[ -f "${MCP_FILE}" ]] && \
+    log_info "    ${MCP_FILE}                      (MCP 配置)"
+  log_info "========================================"
+  log_info ""
+  log_info "  下一步：在该项目目录启动 Claude Code 即可使用 AAN 能力。"
+}
+
+# ===== main =====
+main() {
+  log_info "AAN 安装器启动"
+  preflight
+  detect_context
+  load_manifests
+  init_registry
+  select_modules
+  resolve_deps
+  confirm_plan
+  apply_file_resources
+  apply_hooks
+  configure_mcp_optional
+  summary
 }
 
 main "$@"
