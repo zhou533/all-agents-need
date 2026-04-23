@@ -381,25 +381,41 @@ apply_hooks() {
      --argjson own  "${all_aan_ids_json}" '
     (.hooks // {}) as $cur_hooks
     | ($hooks_src[0].hooks // {}) as $src_hooks
-    # a) 从当前 settings.hooks 剔除所有 AAN 拥有的 id（清理旧 AAN 注入）
+    # a) 从当前 settings.hooks 剔除所有 AAN 拥有的 id
     | .hooks = (
         $cur_hooks
         | to_entries
         | map(.value |= map(select(.id as $i | $own | index($i) | not)))
         | from_entries
       )
-    # b) 按事件注入本次选中的 hooks
+    # b) 按事件注入本次选中的 hooks，并把 command 里 ${CLAUDE_PLUGIN_ROOT}
+    #    替换为 ${CLAUDE_PROJECT_DIR}/.claude（项目级模式下 Claude Code 不展开
+    #    ${CLAUDE_PLUGIN_ROOT}，所以由 install.sh 预先做字符串替换）
     | reduce ($src_hooks | to_entries[]) as $evt (
         .;
         .hooks[$evt.key] = (
           (.hooks[$evt.key] // [])
-          + ($evt.value | map(select(.id as $i | $want | index($i) != null)))
+          + ($evt.value
+             | map(select(.id as $i | $want | index($i) != null))
+             | map(
+                 .hooks |= map(
+                   if .type == "command" then
+                     .command = (.command
+                       | split("${CLAUDE_PLUGIN_ROOT}")
+                       | join("${CLAUDE_PROJECT_DIR}/.claude"))
+                   else . end
+                 )
+               )
+            )
         )
       )
     # c) 清理空事件
     | .hooks |= (to_entries | map(select(.value | length > 0)) | from_entries)
-    # d) 注入 CLAUDE_PLUGIN_ROOT 环境变量
-    | .env = (.env // {}) + {"CLAUDE_PLUGIN_ROOT": "${CLAUDE_PROJECT_DIR}/.claude"}
+    # d) 清理 AAN 旧版本遗留的全局 env.CLAUDE_PLUGIN_ROOT
+    #    仅当值 == AAN 之前写的字面量时才删，避免误伤用户自己写的
+    | if (.env.CLAUDE_PLUGIN_ROOT // null) == "${CLAUDE_PROJECT_DIR}/.claude"
+      then del(.env.CLAUDE_PLUGIN_ROOT) else . end
+    | if (.env // {}) == {} then del(.env) else . end
   ' "${settings}" > "${tmp}" && mv "${tmp}" "${settings}"
 
   log_success "hooks 合并完成（注入 ${wanted_count} 个 hook id）"
@@ -516,7 +532,7 @@ summary() {
   log_info ""
   log_info "  产物位置："
   log_info "    ${CLAUDE_DIR}/                    (所选文件型资源)"
-  log_info "    ${CLAUDE_DIR}/settings.json       (hooks + CLAUDE_PLUGIN_ROOT)"
+  log_info "    ${CLAUDE_DIR}/settings.json       (hooks)"
   log_info "    ${CLAUDE_DIR}/scripts/            (hooks 依赖的 node 脚本)"
   [[ -f "${MCP_FILE}" ]] && \
     log_info "    ${MCP_FILE}                      (MCP 配置)"
