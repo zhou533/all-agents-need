@@ -1,129 +1,136 @@
 # Install
 
-`install/` 是 AAN 的安装入口目录，用来承载不同 AI Agent 或开发工具的安装脚本与初始化说明。
+AAN 的安装入口目录。当前提供 Claude Code 和 Codex 的安装入口。
 
-当前已支持：
-
-- `cursor/`：用于 Cursor 项目的规则、命令、skills 与 MCP 配置安装
-
-后续可以继续扩展：
-
-- `claude/`
-- `codex/`
-- 其他 agent 或 IDE 集成目录
-
-## 目录设计
-
-为了便于扩展，建议每个 agent 在自己的子目录下维护独立安装逻辑，例如：
+## 目录
 
 ```text
 install/
   README.md
-  cursor/
-    install.sh
-    init-mcp.sh
+  manifests.json        # 模块化安装清单（schema v1）
   claude/
-    install.sh
+    install.sh          # 单脚本安装器
   codex/
-    install.sh
+    install-prompt.md   # 在 Codex 会话中加载的安装提示词
+    install-agents.py   # agents/*.md -> .codex/agents/*.toml
+    install-mcp-config.py
+    install-verification.sh
 ```
 
-推荐约定：
+## Claude Code 安装
 
-- 每个 agent 使用独立子目录，避免不同平台脚本互相耦合
-- 每个子目录优先提供统一命名的 `install.sh`
-- 如果需要额外初始化步骤，可以增加 `init-*.sh`
-- 每个脚本都应尽量支持 `--help`，并允许显式指定目标项目路径
+`install/claude/install.sh` 是单脚本安装器，按模块选择把 AAN 资源安装到目标项目的 `.claude/` 目录（及项目根 `.mcp.json`）。
 
-## 当前可用：Cursor
-
-`install/cursor/` 目前包含两类脚本：
-
-- `install/cursor/install.sh`：将本仓库中的规范目录安装到目标项目的 `.cursor/` 下
-- `install/cursor/init-mcp.sh`：交互式生成目标项目的 `.cursor/mcp.json`
-
-### 1. 安装 Cursor 规范文件
-
-在你的 Cursor 项目根目录执行：
+### 前置依赖
 
 ```bash
-bash aan/install/cursor/install.sh
-```
-
-脚本会自动发现本仓库中的规范目录，并将其安装到目标项目的 `.cursor/` 中。默认使用符号链接，便于后续更新。
-
-常用参数：
-
-```bash
-# 指定目标项目目录
-bash aan/install/cursor/install.sh --project-root /path/to/project
-
-# 预览将要执行的变更，不实际写入
-bash aan/install/cursor/install.sh --dry-run
-
-# 遇到冲突时直接覆盖，不再询问
-bash aan/install/cursor/install.sh --force
-
-# 复制文件而不是创建符号链接
-bash aan/install/cursor/install.sh --copy
-
-# 卸载此前安装到 .cursor/ 的内容
-bash aan/install/cursor/install.sh --uninstall
-```
-
-适用场景：
-
-- 初始化 AAN 到新的 Cursor 项目
-- 拉取 AAN 更新后重新执行，刷新 `.cursor/` 下的规范内容
-- 使用 `--dry-run` 先检查影响范围
-
-### 2. 初始化 Cursor MCP 配置
-
-在目标 Cursor 项目根目录执行：
-
-```bash
-bash aan/install/cursor/init-mcp.sh
-```
-
-这个脚本会读取仓库中的 `mcp/mcp-servers.json`，让你交互式选择要启用的 MCP 服务，并生成本地 `.cursor/mcp.json`。
-
-可选参数：
-
-```bash
-# 指定目标项目目录
-bash aan/install/cursor/init-mcp.sh --project-root /path/to/project
-```
-
-依赖：
-
-```bash
+# macOS
 brew install jq gum
+
+# Linux
+# jq  → https://jqlang.github.io/jq/download/
+# gum → https://github.com/charmbracelet/gum#installation
 ```
 
-注意事项：
+缺失 `jq` 或 `gum` 时脚本会提示安装命令并退出，不做降级。
 
-- `.cursor/mcp.json` 可能包含 API Key，只应保留在本地
-- 脚本会尽量把 `.cursor/mcp.json` 加入目标项目的 `.gitignore`
-- 生成后通常需要重启 Cursor 或 reload window 才会生效
-
-## 推荐使用流程
-
-如果你是把本仓库作为子模块放在目标项目的 `aan/` 目录下，当前针对 Cursor 的常见流程如下：
+### 快速开始
 
 ```bash
+# 1. 把 AAN 作为 submodule 加到目标项目根目录
 git submodule add <repo-url> aan
-bash aan/install/cursor/install.sh
-bash aan/install/cursor/init-mcp.sh
+
+# 2. 在目标项目根运行安装器
+bash aan/install/claude/install.sh
 ```
 
-后续更新 AAN 后，重新执行以下命令即可：
+交互流程：
+
+1. 多选要安装的模块（`common` 模块为必装底座，自动加入）
+2. 展示将要落盘的资源概览 → 确认
+3. 自动落盘 skills / agents / commands / rules / output-styles 到 `.claude/`
+4. 合并选中模块的 hooks 到 `.claude/settings.json`
+5. 可选：多选要安装的 MCP（空格勾选，回车确认）
+6. 输出安装摘要
+
+### 模块说明
+
+模块列表与依赖在 `install/manifests.json` 定义（schema v1）。当前包含：
+
+- `common`：横向底座（api-design、coding-standards、tdd-workflow、code-review、security 等）
+- `web` / `typescript` / `rust` / `golang` / `python`：各语言/前端全链路
+- `database`：PostgreSQL + 迁移
+- `mcp`：MCP server 开发
+- `prp`：Plan-Review-Process 流水线
+- `harness-ops`：harness 运维与 UX
+- `continuous-learning`：持续学习与 instinct 系统
+
+增加新模块只需改 `manifests.json`，`install.sh` 不用改。
+
+### 产物位置
+
+产物布局对齐 [Claude Code 官方 .claude 目录规范](https://code.claude.com/docs/en/claude-directory)：
+
+- `<project>/.claude/skills/`、`agents/`、`commands/`、`rules/`、`output-styles/`：文件型资源
+- `<project>/.claude/settings.json`：hooks 段 + `env.CLAUDE_PLUGIN_ROOT`
+- `<project>/.claude/scripts/`：hooks 依赖的 node 引导脚本
+- `<project>/.mcp.json`：所选 MCP 配置（若选了 MCP）
+
+### 幂等与更新
+
+- **文件型资源**：选中的直接覆盖；未选的保留（孤儿不清理，如需彻底重装请先 `rm -rf .claude/` 再跑）
+- **settings.json 的 hooks 段**：以 AAN 的 `hooks/hooks.json` 中所有 id 作为 AAN 所有权边界；每次运行先清除旧 AAN id，再注入本次选中的；用户自己加的 hook id 不动
+- **.mcp.json**：同上规则，按 MCP name 管理边界
+- **备份**：原 `settings.json` / `.mcp.json` 自动备份为 `*.aan-backup-<时间戳>`
+
+### MCP 占位符
+
+`mcp-servers.json` 中某些 MCP（如 `github`、`jira`）包含 `YOUR_XXX_HERE` 占位符。脚本原样写入 `.mcp.json`，安装末尾会列出需要手填的 MCP 及占位符名。使用前请编辑 `.mcp.json` 填入真实凭据。
+
+## Codex 安装
+
+Codex 版采用“安装 prompt + 转换脚本 + 验证脚本”的方式，面向项目级安装。
+
+### 快速开始
 
 ```bash
-bash aan/install/cursor/install.sh
+# 1. 把 AAN 作为 submodule 加到目标项目根目录
+git submodule add <repo-url> all-agents-need
 ```
 
-当未来新增 `claude/`、`codex/` 等目录时，可以沿用相同入口模式：
+然后在 Codex 会话中加载：
 
-```bash
-bash aan/install/<agent>/install.sh
-```
+- `all-agents-need/install/codex/install-prompt.md`
+
+按提示完成模块选择、MCP 选择和安装确认。安装过程中会调用：
+
+- `install/codex/install-agents.py`
+- `install/codex/install-mcp-config.py`
+- `install/codex/install-verification.sh`
+
+### 安装范围
+
+当前 Codex 版只安装：
+
+- `skills`
+- `agents`
+- `mcp`
+- AAN submodule 的硬边界
+
+当前不安装：
+
+- `hooks`
+- `rules`
+- `commands`
+
+### 产物位置
+
+- `<project>/.agents/skills/`
+- `<project>/.codex/agents/`
+- `<project>/.codex/config.toml`
+- `<project>/.codex/aan-install-state.json`
+
+### 注意
+
+- 目标项目需要是 trusted project，否则项目级 `.codex/config.toml` 可能不会生效。
+- MCP 中保留的 `YOUR_*_HERE` 占位符需要用户后续手工补全。
