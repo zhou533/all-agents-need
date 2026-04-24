@@ -508,6 +508,66 @@ configure_mcp_optional() {
   fi
 }
 
+# ===== Stage 7d: apply_scan_deny =====
+# 把 AAN 子模块目录加入 .claude/settings.json 的 permissions.deny
+# 目的：在该项目里跑 Claude Code 时不扫描 AAN 目录，避免上下文污染
+apply_scan_deny() {
+  log_info "=== 屏蔽 AAN 目录扫描 ==="
+
+  # 1. 计算 AAN 相对项目根的路径
+  local rel="${AAN_ROOT#${PROJECT_ROOT}/}"
+  if [[ "${rel}" == "${AAN_ROOT}" || -z "${rel}" ]]; then
+    log_warn "AAN 路径不在项目根之下（${AAN_ROOT}），非 submodule 场景，跳过 scan-deny"
+    return 0
+  fi
+
+  log_info "AAN 子模块路径：${rel}"
+  log_info "写入后，Claude Code 在该项目运行时将不会扫描/读写该目录，避免污染上下文。"
+
+  if ! gum confirm "是否把该目录加入 .claude/settings.json 的 permissions.deny？"; then
+    log_info "已跳过 scan-deny 写入"
+    log_info "如需手动操作，可编辑 ${CLAUDE_DIR}/settings.json："
+    log_info "  • 添加：在 .permissions.deny 数组中写入 \"Read(${rel}/**)\" 等条目"
+    log_info "  • 删除：从 .permissions.deny 数组中移除对应条目"
+    return 0
+  fi
+
+  # 2. 组装 AAN 拥有的 deny 条目集合（对应当前 REL）
+  local owned_json
+  owned_json="$(jq -nc --arg r "${rel}" '
+    ["Read", "Edit", "Write", "Glob", "Grep"]
+    | map("\(.)(\($r)/**)")
+  ')"
+
+  # 3. 准备 settings.json（apply_hooks 通常已创建；此处做防御）
+  local settings="${CLAUDE_DIR}/settings.json"
+  if [[ ! -f "${settings}" ]]; then
+    mkdir -p "${CLAUDE_DIR}"
+    echo '{}' > "${settings}"
+    log_info "创建新 settings.json"
+  fi
+
+  # 4. jq 合并：
+  #    a) 从 .permissions.deny 剔除所有属于 AAN 拥有集合的条目（幂等重写）
+  #    b) 追加本次 5 条
+  #    c) unique 去重
+  #    d) 清理空 deny / 空 permissions
+  local tmp
+  tmp="$(mktemp)"
+  jq --argjson owned "${owned_json}" '
+    .permissions = (.permissions // {})
+    | .permissions.deny = (
+        ((.permissions.deny // []) | map(select(. as $x | $owned | index($x) | not)))
+        + $owned
+        | unique
+      )
+    | if (.permissions.deny // []) == [] then del(.permissions.deny) else . end
+    | if (.permissions // {}) == {} then del(.permissions) else . end
+  ' "${settings}" > "${tmp}" && mv "${tmp}" "${settings}"
+
+  log_success "scan-deny 写入完成（注入 5 条规则，路径：${rel}/**）"
+}
+
 # ===== Stage 8: summary =====
 summary() {
   echo "" >&2
@@ -532,7 +592,7 @@ summary() {
   log_info ""
   log_info "  产物位置："
   log_info "    ${CLAUDE_DIR}/                    (所选文件型资源)"
-  log_info "    ${CLAUDE_DIR}/settings.json       (hooks)"
+  log_info "    ${CLAUDE_DIR}/settings.json       (hooks + permissions.deny 可屏蔽 AAN 目录扫描)"
   log_info "    ${CLAUDE_DIR}/scripts/            (hooks 依赖的 node 脚本)"
   [[ -f "${MCP_FILE}" ]] && \
     log_info "    ${MCP_FILE}                      (MCP 配置)"
@@ -554,6 +614,7 @@ main() {
   apply_file_resources
   apply_hooks
   configure_mcp_optional
+  apply_scan_deny
   summary
 }
 
