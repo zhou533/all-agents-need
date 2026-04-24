@@ -1,6 +1,6 @@
 # Install
 
-AAN 的安装入口目录。当前仅包含 Claude Code 的安装器；其他目标（Cursor、Codex 等）的安装逻辑待后续重写。
+AAN 的安装入口目录。当前提供 Claude Code 和 Codex 的安装入口。
 
 ## 目录
 
@@ -10,6 +10,11 @@ install/
   manifests.json        # 模块化安装清单（schema v1）
   claude/
     install.sh          # 单脚本安装器
+  codex/
+    install-prompt.md   # 在 Codex 会话中加载的安装提示词
+    install-agents.py   # agents/*.md -> .codex/agents/*.toml
+    install-mcp-config.py
+    install-verification.sh
 ```
 
 ## Claude Code 安装
@@ -81,3 +86,51 @@ bash aan/install/claude/install.sh
 ### MCP 占位符
 
 `mcp-servers.json` 中某些 MCP（如 `github`、`jira`）包含 `YOUR_XXX_HERE` 占位符。脚本原样写入 `.mcp.json`，安装末尾会列出需要手填的 MCP 及占位符名。使用前请编辑 `.mcp.json` 填入真实凭据。
+
+## Codex 安装
+
+Codex 版采用“安装 prompt + 转换脚本 + 验证脚本”的方式，面向项目级安装。
+
+### 快速开始
+
+```bash
+# 1. 把 AAN 作为 submodule 加到目标项目根目录
+git submodule add <repo-url> all-agents-need
+```
+
+然后在 Codex 会话中加载：
+
+- `all-agents-need/install/codex/install-prompt.md`
+
+按提示完成模块选择、MCP 选择和安装确认。安装过程中会调用：
+
+- `install/codex/install-agents.py`
+- `install/codex/install-mcp-config.py`
+- `install/codex/install-verification.sh`
+
+### 安装范围
+
+当前 Codex 版只安装：
+
+- `skills`
+- `agents`
+- `mcp`
+- AAN submodule 的硬边界
+
+当前不安装：
+
+- `hooks`
+- `rules`
+- `commands`
+
+### 产物位置
+
+- `<project>/.agents/skills/`
+- `<project>/.codex/agents/`
+- `<project>/.codex/config.toml`
+- `<project>/.codex/aan-install-state.json`
+
+### 注意
+
+- 目标项目需要是 trusted project，否则项目级 `.codex/config.toml` 可能不会生效。
+- MCP 中保留的 `YOUR_*_HERE` 占位符需要用户后续手工补全。
